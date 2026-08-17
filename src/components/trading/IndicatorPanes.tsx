@@ -1,7 +1,6 @@
 import { useMemo } from "react";
 import {
   Bar,
-  BarChart,
   CartesianGrid,
   ComposedChart,
   Line,
@@ -118,5 +117,3 @@ export function ChartTooltip({
     </div>
   );
 }
-
-export { BarChart };
