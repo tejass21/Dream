@@ -43,7 +43,7 @@ export function TopNav() {
             <CandlestickChart className="size-4" />
           </span>
           <span className="text-sm font-semibold tracking-tight">
-            Candle<span className="text-primary">AI</span>
+            Dream
           </span>
         </Link>
 

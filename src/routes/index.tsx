@@ -10,7 +10,7 @@ import { PredictionPanel } from "@/components/trading/PredictionPanel";
 import { TerminalShell } from "@/components/trading/AppProviders";
 import { IndicatorPanes } from "@/components/trading/IndicatorPanes";
 
-const title = "CandleAI Terminal — Next-Candle Probability & Paper Trading";
+const title = "Dream Terminal — Next-Candle Probability & Paper Trading";
 const description =
   "Dark quant terminal for next-candle UP/DOWN/SIDEWAYS probability estimates, technical signals and $10,000 virtual paper trading across crypto and Indian markets.";
 
@@ -29,7 +29,7 @@ export const Route = createFileRoute("/")({
 function Terminal() {
   return (
     <TerminalShell>
-      <h1 className="sr-only">CandleAI next-candle prediction and paper trading terminal</h1>
+      <h1 className="sr-only">Dream next-candle prediction and paper trading terminal</h1>
       <div className="space-y-3">
         <MarketStats />
         <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_360px]">

@@ -1,3 +1,4 @@
+import { createServerFn } from "@tanstack/react-start";
 import { getAsset, timeframeSeconds, type Candle, type Timeframe } from "./types";
 
 /**
@@ -141,9 +142,305 @@ class MockMarketDataSource implements MarketDataSource {
   }
 }
 
-export const mockDataSource: MarketDataSource = new MockMarketDataSource();
+// Map timeframe to Binance interval string
+function mapBinanceInterval(timeframe: Timeframe): string {
+  switch (timeframe) {
+    case "1m":
+      return "1m";
+    case "5m":
+      return "5m";
+    case "15m":
+      return "15m";
+    case "1h":
+      return "1h";
+    case "4h":
+      return "4h";
+    case "1d":
+      return "1d";
+    default:
+      return "5m";
+  }
+}
+
+// Fetch historical candles from Binance
+async function fetchBinanceCandles(symbol: string, timeframe: Timeframe, limit = 400): Promise<Candle[]> {
+  const binanceSymbol = symbol.replace("/", "").toUpperCase();
+  const interval = mapBinanceInterval(timeframe);
+  const url = `https://api.binance.com/api/v3/klines?symbol=${binanceSymbol}&interval=${interval}&limit=${limit}`;
+
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Binance API error: ${response.statusText}`);
+  }
+  const data = await response.json();
+
+  return data.map((d: any) => ({
+    time: Math.floor(d[0] / 1000), // convert ms to seconds
+    open: parseFloat(d[1]),
+    high: parseFloat(d[2]),
+    low: parseFloat(d[3]),
+    close: parseFloat(d[4]),
+    volume: parseFloat(d[5]),
+  }));
+}
+
+// Subscribe to real-time candles from Binance Websocket
+function subscribeBinance(
+  symbol: string,
+  timeframe: Timeframe,
+  onUpdate: (candle: Candle, isNewCandle: boolean) => void,
+): () => void {
+  const binanceSymbol = symbol.replace("/", "").toLowerCase();
+  const interval = mapBinanceInterval(timeframe);
+  const wsUrl = `wss://stream.binance.com:9443/ws/${binanceSymbol}@kline_${interval}`;
+
+  const ws = new WebSocket(wsUrl);
+  let lastCandleTime = 0;
+
+  ws.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      if (data.e === "kline") {
+        const k = data.k;
+        const candle: Candle = {
+          time: Math.floor(k.t / 1000),
+          open: parseFloat(k.o),
+          high: parseFloat(k.h),
+          low: parseFloat(k.l),
+          close: parseFloat(k.c),
+          volume: parseFloat(k.v),
+        };
+
+        const isNew = lastCandleTime > 0 && candle.time > lastCandleTime;
+        lastCandleTime = candle.time;
+
+        onUpdate(candle, isNew);
+      }
+    } catch (err) {
+      console.error("Error parsing Binance WS message:", err);
+    }
+  };
+
+  ws.onerror = (err) => {
+    console.error("Binance WebSocket connection error:", err);
+  };
+
+  return () => {
+    if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+      ws.close();
+    }
+  };
+}
+
+// Map local symbols to Yahoo Finance symbols
+function getYahooSymbol(symbol: string): string {
+  if (symbol === "NIFTY") return "^NSEI";
+  if (symbol === "BANKNIFTY") return "^NSEBANK";
+  if (symbol === "RELIANCE") return "RELIANCE.NS";
+  return symbol;
+}
+
+// Map timeframe to Yahoo interval and range options
+function mapYahooTimeframe(timeframe: Timeframe): { interval: string; range: string } {
+  switch (timeframe) {
+    case "1m":
+      return { interval: "1m", range: "1d" };
+    case "5m":
+      return { interval: "5m", range: "5d" };
+    case "15m":
+      return { interval: "15m", range: "5d" };
+    case "1h":
+      return { interval: "1h", range: "1mo" };
+    case "4h":
+      return { interval: "1h", range: "3mo" }; // We aggregate 1h to 4h
+    case "1d":
+      return { interval: "1d", range: "1y" };
+    default:
+      return { interval: "5m", range: "5d" };
+  }
+}
+
+const fetchYahooDirect = createServerFn({ method: "GET" })
+  .handler(async (payload: { symbol: string; timeframe: Timeframe }) => {
+    const { symbol, timeframe } = payload;
+    const yahooSymbol = getYahooSymbol(symbol);
+    const { interval, range } = mapYahooTimeframe(timeframe);
+    const yfUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=${interval}&range=${range}`;
+
+    const response = await fetch(yfUrl);
+    if (!response.ok) {
+      throw new Error(`Yahoo Finance API error: ${response.statusText}`);
+    }
+    const rawData = await response.json();
+    return rawData;
+  });
+
+// Fetch historical candles from Yahoo Finance via server function
+async function fetchYahooCandles(symbol: string, timeframe: Timeframe): Promise<Candle[]> {
+  const rawData: any = await fetchYahooDirect({ symbol, timeframe });
+
+  if (!rawData.chart?.result?.[0]) {
+    throw new Error("Invalid Yahoo Finance response");
+  }
+
+  const result = rawData.chart.result[0];
+  const timestamps = result.timestamp || [];
+  const quote = result.indicators.quote[0];
+  const opens = quote.open || [];
+  const highs = quote.high || [];
+  const lows = quote.low || [];
+  const closes = quote.close || [];
+  const volumes = quote.volume || [];
+
+  const candles: Candle[] = timestamps
+    .map((time: number, idx: number) => ({
+      time,
+      open: opens[idx] ?? closes[idx] ?? 0,
+      high: highs[idx] ?? closes[idx] ?? 0,
+      low: lows[idx] ?? closes[idx] ?? 0,
+      close: closes[idx] ?? 0,
+      volume: volumes[idx] ?? 0,
+    }))
+    .filter((c: Candle) => c.close > 0);
+
+  // Aggregate 1-hour candles into 4-hour candles if timeframe is 4h
+  if (timeframe === "4h") {
+    const aggregated: Candle[] = [];
+    const step = 4 * 3600;
+    for (let i = 0; i < candles.length; i++) {
+      const c = candles[i];
+      if (!c) continue;
+      const periodStart = c.time - (c.time % step);
+      let group = aggregated.find((g) => g.time === periodStart);
+      if (!group) {
+        group = {
+          time: periodStart,
+          open: c.open,
+          high: c.high,
+          low: c.low,
+          close: c.close,
+          volume: c.volume,
+        };
+        aggregated.push(group);
+      } else {
+        group.high = Math.max(group.high, c.high);
+        group.low = Math.min(group.low, c.low);
+        group.close = c.close;
+        group.volume += c.volume;
+      }
+    }
+    return aggregated;
+  }
+
+  return candles;
+}
+
+// Subscribe/Poll Yahoo Finance candles every 12 seconds
+function subscribeYahoo(
+  symbol: string,
+  timeframe: Timeframe,
+  onUpdate: (candle: Candle, isNewCandle: boolean) => void,
+): () => void {
+  let lastCandleTime = 0;
+
+  const tick = async () => {
+    try {
+      const candles = await fetchYahooCandles(symbol, timeframe);
+      if (candles.length === 0) return;
+
+      const last = candles[candles.length - 1];
+      if (last) {
+        const isNew = lastCandleTime > 0 && last.time > lastCandleTime;
+        lastCandleTime = last.time;
+        onUpdate(last, isNew);
+      }
+    } catch (e) {
+      console.warn("Yahoo subscription polling error:", e);
+    }
+  };
+
+  void tick();
+  const interval = setInterval(tick, 12000);
+
+  return () => {
+    clearInterval(interval);
+  };
+}
+
+class HybridMarketDataSource implements MarketDataSource {
+  readonly id = "live-hybrid";
+  readonly isLive = true;
+  private mockSource = new MockMarketDataSource();
+  private liveCache = new Map<string, Candle[]>();
+
+  private isCrypto(symbol: string): boolean {
+    const asset = getAsset(symbol);
+    return asset.kind === "crypto";
+  }
+
+  async getCandles(symbol: string, timeframe: Timeframe, limit = 400): Promise<Candle[]> {
+    try {
+      let candles: Candle[];
+      if (this.isCrypto(symbol)) {
+        candles = await fetchBinanceCandles(symbol, timeframe, limit);
+      } else {
+        candles = await fetchYahooCandles(symbol, timeframe);
+      }
+
+      this.liveCache.set(`${symbol}|${timeframe}`, candles);
+      return candles.slice(-limit);
+    } catch (e) {
+      console.warn(`Failed to fetch live candles for ${symbol}, falling back to mock:`, e);
+      return this.mockSource.getCandles(symbol, timeframe, limit);
+    }
+  }
+
+  subscribe(
+    symbol: string,
+    timeframe: Timeframe,
+    onUpdate: (candle: Candle, isNewCandle: boolean) => void,
+  ): () => void {
+    const key = `${symbol}|${timeframe}`;
+    let lastCandleTime = 0;
+
+    // Retrieve initial last candle time from cache if present
+    const cached = this.liveCache.get(key);
+    if (cached && cached.length > 0) {
+      const lastCandle = cached[cached.length - 1];
+      if (lastCandle) {
+        lastCandleTime = lastCandle.time;
+      }
+    }
+
+    const handleUpdate = (candle: Candle, isNew: boolean) => {
+      // Keep cache in sync for getCandles calls
+      const candles = this.liveCache.get(key) || [];
+      if (candles.length > 0) {
+        if (isNew) {
+          candles.push(candle);
+          if (candles.length > 900) candles.shift();
+        } else {
+          candles[candles.length - 1] = candle;
+        }
+        this.liveCache.set(key, candles);
+      } else {
+        this.liveCache.set(key, [candle]);
+      }
+
+      onUpdate(candle, isNew);
+    };
+
+    if (this.isCrypto(symbol)) {
+      return subscribeBinance(symbol, timeframe, handleUpdate);
+    } else {
+      return subscribeYahoo(symbol, timeframe, handleUpdate);
+    }
+  }
+}
+
+export const liveDataSource: MarketDataSource = new HybridMarketDataSource();
 
 /** Swap this for a live provider later; the UI reads it through this getter only. */
 export function getMarketDataSource(): MarketDataSource {
-  return mockDataSource;
+  return liveDataSource;
 }

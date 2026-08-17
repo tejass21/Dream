@@ -11,7 +11,7 @@ import {
   type Side,
 } from "./types";
 
-const STORAGE_KEY = "candleai.paper.account.v1";
+const STORAGE_KEY = "dream.paper.account.v1";
 
 interface OpenParams {
   asset: string;

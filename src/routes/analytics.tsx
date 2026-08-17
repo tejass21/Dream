@@ -35,9 +35,9 @@ import { computeAccuracy, evaluateHistory } from "@/lib/prediction/backtest";
 import type { Direction } from "@/lib/prediction/types";
 import { cn } from "@/lib/utils";
 
-const title = "CandleAI Analytics — Prediction Accuracy & Paper Performance";
+const title = "Dream Analytics — Prediction Accuracy & Paper Performance";
 const description =
-  "Walk-forward prediction accuracy, confusion matrix, equity curve and drawdown analytics for the CandleAI next-candle research model.";
+  "Walk-forward prediction accuracy, confusion matrix, equity curve and drawdown analytics for the Dream next-candle research model.";
 
 export const Route = createFileRoute("/analytics")({
   head: () => ({

@@ -202,13 +202,13 @@ export function computePrediction(candles: Candle[], asset: string, timeframe: P
     confidence: round(confidence),
     expectedMove: round(expectedMove, 6),
     factors: factors.sort((a, b) => b.weight - a.weight),
-    modelId: "candleai-heuristic-v0",
+    modelId: "dream-heuristic-v0",
     modelKind: "heuristic-mock",
   };
 }
 
 export const mockPredictionService: PredictionService = {
-  modelId: "candleai-heuristic-v0",
+  modelId: "dream-heuristic-v0",
   modelKind: "heuristic-mock",
   async predict({ candles, asset, timeframe }: PredictionRequest): Promise<Prediction> {
     return computePrediction(candles, asset, timeframe);
