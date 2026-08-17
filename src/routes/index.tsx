@@ -1,24 +1,54 @@
 import { createFileRoute } from "@tanstack/react-router";
 
-// No head() here: the home route inherits title/description/og/twitter from
-// __root.tsx, and ships no og:image so serve-time hosting can inject the
-// project's social preview (explicit og:image or latest screenshot).
+import { CandleChart } from "@/components/trading/CandleChart";
+import { Disclaimer } from "@/components/trading/Disclaimer";
+import { ExplanationPanel } from "@/components/trading/ExplanationPanel";
+import { MarketStats } from "@/components/trading/MarketStats";
+import { PaperTradingPanel } from "@/components/trading/PaperTradingPanel";
+import { Panel } from "@/components/trading/Panel";
+import { PredictionPanel } from "@/components/trading/PredictionPanel";
+import { TerminalShell } from "@/components/trading/AppProviders";
+import { IndicatorPanes } from "@/components/trading/IndicatorPanes";
+
+const title = "CandleAI Terminal — Next-Candle Probability & Paper Trading";
+const description =
+  "Dark quant terminal for next-candle UP/DOWN/SIDEWAYS probability estimates, technical signals and $10,000 virtual paper trading across crypto and Indian markets.";
+
 export const Route = createFileRoute("/")({
-  component: Index,
+  head: () => ({
+    meta: [
+      { title },
+      { name: "description", content: description },
+      { property: "og:title", content: title },
+      { property: "og:description", content: description },
+    ],
+  }),
+  component: Terminal,
 });
 
-// IMPORTANT: Replace this placeholder. See ./README.md for routing conventions.
-function Index() {
+function Terminal() {
   return (
-    <div
-      className="flex min-h-screen items-center justify-center"
-      style={{ backgroundColor: "#fcfbf8" }}
-    >
-      <img
-        data-lovable-blank-page-placeholder="REMOVE_THIS"
-        src="https://cdn.gpteng.co/blank-app-v1.svg"
-        alt="Your app will live here!"
-      />
-    </div>
+    <TerminalShell>
+      <h1 className="sr-only">CandleAI next-candle prediction and paper trading terminal</h1>
+      <div className="space-y-3">
+        <MarketStats />
+        <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_360px]">
+          <div className="space-y-3">
+            <Panel bodyClassName="p-0" className="overflow-hidden">
+              <div className="h-[420px] lg:h-[480px]">
+                <CandleChart />
+              </div>
+            </Panel>
+            <IndicatorPanes />
+            <Disclaimer />
+          </div>
+          <div className="space-y-3">
+            <PredictionPanel />
+            <PaperTradingPanel />
+            <ExplanationPanel />
+          </div>
+        </div>
+      </div>
+    </TerminalShell>
   );
 }

@@ -1,0 +1,49 @@
+import type { Candle, Timeframe } from "../market/types";
+
+export type Direction = "UP" | "DOWN" | "SIDEWAYS";
+
+export interface PredictionFactor {
+  label: string;
+  impact: "positive" | "negative" | "neutral";
+  /** 0..1 relative weight of the feature in this prediction */
+  weight: number;
+  detail?: string;
+}
+
+export interface Prediction {
+  id: string;
+  asset: string;
+  timeframe: Timeframe;
+  /** candle open time (unix seconds) the prediction was made for */
+  timestamp: number;
+  currentPrice: number;
+  direction: Direction;
+  upProbability: number;
+  downProbability: number;
+  sidewaysProbability: number;
+  /** 0..1 */
+  confidence: number;
+  /** fractional expected move, e.g. 0.0021 = +0.21% */
+  expectedMove: number;
+  factors: PredictionFactor[];
+  modelId: string;
+  modelKind: "heuristic-mock" | "ml";
+}
+
+export interface PredictionRequest {
+  asset: string;
+  timeframe: Timeframe;
+  candles: Candle[];
+}
+
+export interface PredictionService {
+  readonly modelId: string;
+  readonly modelKind: "heuristic-mock" | "ml";
+  predict(request: PredictionRequest): Promise<Prediction>;
+}
+
+export interface EvaluatedPrediction extends Prediction {
+  actualDirection: Direction | null;
+  correct: boolean | null;
+  actualMove: number | null;
+}
