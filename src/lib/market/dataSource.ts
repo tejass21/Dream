@@ -261,8 +261,9 @@ function mapYahooTimeframe(timeframe: Timeframe): { interval: string; range: str
 }
 
 const fetchYahooDirect = createServerFn({ method: "GET" })
-  .handler(async (payload: { symbol: string; timeframe: Timeframe }) => {
-    const { symbol, timeframe } = payload;
+  .validator((d: { symbol: string; timeframe: Timeframe }) => d)
+  .handler(async (ctx) => {
+    const { symbol, timeframe } = ctx.data;
     const yahooSymbol = getYahooSymbol(symbol);
     const { interval, range } = mapYahooTimeframe(timeframe);
     const yfUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=${interval}&range=${range}`;
@@ -277,7 +278,7 @@ const fetchYahooDirect = createServerFn({ method: "GET" })
 
 // Fetch historical candles from Yahoo Finance via server function
 async function fetchYahooCandles(symbol: string, timeframe: Timeframe): Promise<Candle[]> {
-  const rawData: any = await fetchYahooDirect({ symbol, timeframe });
+  const rawData: any = await fetchYahooDirect({ data: { symbol, timeframe } });
 
   if (!rawData.chart?.result?.[0]) {
     throw new Error("Invalid Yahoo Finance response");
