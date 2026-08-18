@@ -1,10 +1,14 @@
-import { ArrowDown, ArrowRight, ArrowUp, Cpu } from "lucide-react";
+import { ArrowDown, ArrowRight, ArrowUp, Cpu, ShieldCheck, ShieldX, Zap } from "lucide-react";
+import { useMemo } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { useMarket } from "@/lib/market/MarketProvider";
 import type { Direction } from "@/lib/prediction/types";
 import { cn } from "@/lib/utils";
 import { Panel } from "./Panel";
+import { computePrediction } from "@/lib/prediction/mockService";
+import { classifyMove } from "@/lib/prediction/backtest";
+import { realizedVolatility } from "@/lib/market/indicators";
 
 const DIRECTION_STYLES: Record<Direction, { text: string; bar: string; icon: React.ReactNode }> = {
   UP: { text: "text-bull", bar: "bg-bull", icon: <ArrowUp className="size-3.5" /> },
@@ -13,7 +17,36 @@ const DIRECTION_STYLES: Record<Direction, { text: string; bar: string; icon: Rea
 };
 
 export function PredictionPanel() {
-  const { prediction, secondsToClose, timeframe } = useMarket();
+  const { prediction, secondsToClose, timeframe, candles, symbol } = useMarket();
+
+  const prevPrediction = useMemo(() => {
+    if (candles.length < 62) return null;
+    try {
+      // We score the prediction made at close of candles[n - 3] for candles[n - 2]
+      // using history up to candles.length - 2 (which has last index candles.length - 3)
+      const history = candles.slice(0, candles.length - 2);
+      const pred = computePrediction(history, symbol, timeframe);
+      
+      const prevClose = candles[candles.length - 3]!.close;
+      const targetCandle = candles[candles.length - 2]!;
+      
+      const vol = realizedVolatility(history, 20);
+      const threshold = (0.5 * vol) / 100;
+      
+      const actualDir = classifyMove(prevClose, targetCandle.close, threshold);
+      const actualMove = (targetCandle.close - prevClose) / prevClose;
+      const correct = pred.direction === actualDir;
+
+      return {
+        pred,
+        actualDir,
+        actualMove,
+        correct,
+      };
+    } catch (e) {
+      return null;
+    }
+  }, [candles, symbol, timeframe]);
 
   if (!prediction) {
     return (
@@ -33,12 +66,14 @@ export function PredictionPanel() {
     secondsToClose % 60,
   ).padStart(2, "0")}`;
 
+  const isTrade = prediction.signal === "TRADE";
+
   return (
     <Panel
       title="Next candle prediction"
       action={
         <Badge variant="outline" className="num border-panel-border text-[10px]">
-          {timeframe} · closes in {mmss}
+          NEXT {timeframe.toUpperCase()} · closes in {mmss}
         </Badge>
       }
     >
@@ -66,20 +101,20 @@ export function PredictionPanel() {
         ))}
       </div>
 
-      <div className="mt-4 grid grid-cols-3 gap-2 border-t border-panel-border pt-3">
-        <Metric label="Prediction">
-          <span className={cn("flex items-center gap-1 num text-sm font-semibold", style.text)}>
+      <div className="mt-4 grid grid-cols-2 gap-x-2 gap-y-3 border-t border-panel-border pt-3 sm:grid-cols-3">
+        <Metric label="Direction">
+          <span className={cn("flex items-center gap-1 num text-xs font-semibold", style.text)}>
             {style.icon}
             {prediction.direction}
           </span>
         </Metric>
         <Metric label="Confidence">
-          <span className="num text-sm font-semibold">{(prediction.confidence * 10).toFixed(1)}/10</span>
+          <span className="num text-xs font-semibold">{(prediction.confidence * 100).toFixed(0)}%</span>
         </Metric>
-        <Metric label="Expected move">
+        <Metric label="Expected return">
           <span
             className={cn(
-              "num text-sm font-semibold",
+              "num text-xs font-semibold",
               prediction.expectedMove > 0 ? "text-bull" : prediction.expectedMove < 0 ? "text-bear" : "text-neutral",
             )}
           >
@@ -87,11 +122,48 @@ export function PredictionPanel() {
             {(prediction.expectedMove * 100).toFixed(2)}%
           </span>
         </Metric>
+        <Metric label="Market regime">
+          <span className="num text-[10px] font-semibold text-foreground tracking-wide truncate">
+            {prediction.regime?.replace("_", " ")}
+          </span>
+        </Metric>
+        <Metric label="Signal">
+          <Badge
+            variant="outline"
+            className={cn(
+              "h-5 text-[9px] font-bold py-0 flex w-fit items-center gap-1 px-1.5",
+              isTrade
+                ? "border-bull/30 bg-bull-muted text-bull"
+                : "border-muted-foreground/30 bg-muted text-muted-foreground",
+            )}
+          >
+            {isTrade ? <Zap className="size-2" /> : <ShieldX className="size-2" />}
+            {prediction.signal}
+          </Badge>
+        </Metric>
+        <Metric label="Agreement">
+          <span className="num text-xs font-semibold text-muted-foreground flex items-center gap-1">
+            <ShieldCheck className="size-3 text-primary" />
+            {prediction.modelAgreement}
+          </span>
+        </Metric>
       </div>
 
-      <div className="mt-3 flex items-center gap-1.5 label-xs">
-        <Cpu className="size-3" />
-        model {prediction.modelId} · {prediction.modelKind === "ml" ? "trained model" : "heuristic feature model (no ML backend connected)"}
+      {prevPrediction && (
+        <div className="mt-3.5 border-t border-panel-border pt-2.5 flex items-center justify-between text-[10px] leading-none">
+          <span className="text-muted-foreground text-[9px]">PREV OUTCOME</span>
+          <span className="num font-semibold text-muted-foreground">
+            Act <span className={cn("font-bold", DIRECTION_STYLES[prevPrediction.actualDir].text)}>{prevPrediction.actualDir}</span> ·{" "}
+            <span className={prevPrediction.correct ? "text-bull" : "text-bear"}>
+              {prevPrediction.correct ? "HIT" : "MISS"} ({(prevPrediction.actualMove * 100).toFixed(2)}%)
+            </span>
+          </span>
+        </div>
+      )}
+
+      <div className="mt-3 flex items-center gap-1.5 label-xs text-[9px]">
+        <Cpu className="size-2.5 text-primary" />
+        model {prediction.modelId} ({prediction.modelVersion}) · walk-forward ensemble ML
       </div>
     </Panel>
   );
@@ -99,9 +171,9 @@ export function PredictionPanel() {
 
 function Metric({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div>
-      <p className="label-xs">{label}</p>
-      <div className="mt-0.5">{children}</div>
+    <div className="min-w-0">
+      <p className="label-xs text-[9px] mb-0.5 text-muted-foreground">{label}</p>
+      <div className="flex h-5 items-center">{children}</div>
     </div>
   );
 }

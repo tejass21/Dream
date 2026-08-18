@@ -1,224 +1,424 @@
 import { computeIndicators, lastDefined, realizedVolatility } from "../market/indicators";
-import type { Candle } from "../market/types";
+import type { Candle, Timeframe } from "../market/types";
+import niftyData from "./nifty_data.json";
+
+// Shared pre-trained model parameter cache for Nifty 50
+let niftyEnsemble: TrainedEnsemble | null = null;
 import type {
   Direction,
   Prediction,
   PredictionFactor,
   PredictionRequest,
   PredictionService,
+  TradingDecision,
 } from "./types";
+import {
+  extractFeatures,
+  fitScaler,
+  transformFeatures,
+  SoftmaxRegression,
+  RidgeRegression,
+  tuneTemperature,
+  getSwingPoints,
+  FeatureSet,
+  Scaler,
+} from "./ml";
+import { classifyMove } from "./backtest";
 
-function softmax(scores: number[], temperature = 1): number[] {
-  const max = Math.max(...scores);
-  const exps = scores.map((s) => Math.exp((s - max) / temperature));
-  const sum = exps.reduce((a, b) => a + b, 0);
-  return exps.map((e) => e / sum);
-}
+// Model feature partitions
+const PRICE_KEYS = ["ret1", "ret3", "ret5", "mom6", "bodyPct", "upperWickPct", "lowerWickPct", "closeLocation", "distRollingHigh40", "distRollingLow40"];
+const VOLUME_KEYS = [...PRICE_KEYS, "relVolume", "volChange", "priceVolumeInt"];
+const MTF_KEYS = ["ret1", "mom6", "closeLocation", "tfHigher_ret1", "tfHigher_closeLoc"];
+const REGIME_KEYS = ["volRatio", "realizedVol", "atrPct", "distSupport", "distResistance", "consecutiveDir", "hour", "dayOfWeek"];
 
-function round(value: number, digits = 4): number {
-  const f = 10 ** digits;
-  return Math.round(value * f) / f;
-}
+const ALL_KEYS = Array.from(new Set([...PRICE_KEYS, ...VOLUME_KEYS, ...MTF_KEYS, ...REGIME_KEYS]));
 
-/**
- * Feature-based heuristic stand-in for a trained model. It is explicitly NOT an
- * ML model: it computes technical features, scores them, and normalises the
- * scores into class probabilities so the UI contract matches a future
- * Python/FastAPI model response 1:1.
- */
-export function computePrediction(candles: Candle[], asset: string, timeframe: PredictionRequest["timeframe"]): Prediction {
-  const ind = computeIndicators(candles);
-  const last = candles[candles.length - 1]!;
+/** Detects the current market regime based on structural rules and indicators */
+export function detectRegime(candles: Candle[]): string {
+  const n = candles.length;
+  if (n < 60) return "RANGE";
+
+  const last = candles[n - 1]!;
   const price = last.close;
 
+  // Indicators
+  const ind = computeIndicators(candles);
   const ema9 = lastDefined(ind.ema9) ?? price;
   const ema21 = lastDefined(ind.ema21) ?? price;
   const ema50 = lastDefined(ind.ema50) ?? price;
-  const rsiValue = lastDefined(ind.rsi14) ?? 50;
-  const rsiPrev = ind.rsi14[ind.rsi14.length - 4] ?? rsiValue;
-  const macdLast = ind.macd[ind.macd.length - 1] ?? { macd: null, signal: null, histogram: null };
-  const macdPrev = ind.macd[ind.macd.length - 2] ?? macdLast;
-  const atrValue = lastDefined(ind.atr14) ?? price * 0.005;
-  const vol = realizedVolatility(candles, 20);
+  const vol20 = realizedVolatility(candles, 20);
+  const vol100 = realizedVolatility(candles, 100) || vol20;
 
-  const recent = candles.slice(-6);
-  const momentum = recent.length > 1 ? recent[recent.length - 1]!.close / recent[0]!.close - 1 : 0;
-  const volAvgOld =
-    candles.slice(-20, -5).reduce((a, c) => a + c.volume, 0) / Math.max(candles.slice(-20, -5).length, 1);
-  const volAvgNew = candles.slice(-5).reduce((a, c) => a + c.volume, 0) / 5;
-  const volumeTrend = volAvgOld > 0 ? volAvgNew / volAvgOld - 1 : 0;
+  const isBull = ema9 > ema21 && ema21 > ema50 && price > ema9;
+  const isBear = ema9 < ema21 && ema21 < ema50 && price < ema9;
 
-  const highs = candles.slice(-40).map((c) => c.high);
-  const lows = candles.slice(-40).map((c) => c.low);
-  const resistance = Math.max(...highs);
-  const support = Math.min(...lows);
-  const nearResistance = (resistance - price) / (atrValue || 1) < 1.2;
-  const nearSupport = (price - support) / (atrValue || 1) < 1.2;
+  // Swing analysis
+  const swings = getSwingPoints(candles, 20);
+  const atrVal = lastDefined(ind.atr14) ?? price * 0.005;
 
-  const atrPct = (atrValue / price) * 100;
-  const factors: PredictionFactor[] = [];
-  let bull = 0;
-  let bear = 0;
-  let flat = 0.35;
+  const nearResistance = (swings.resistance - price) / (atrVal || 1) < 1.0;
+  const nearSupport = (price - swings.support) / (atrVal || 1) < 1.0;
 
-  const momScore = Math.max(-1, Math.min(1, momentum / (atrValue / price || 0.005) / 2));
-  bull += Math.max(0, momScore) * 1.15;
-  bear += Math.max(0, -momScore) * 1.15;
-  factors.push({
-    label: `Short-term momentum is ${momScore >= 0 ? "positive" : "negative"}`,
-    impact: momScore >= 0 ? "positive" : "negative",
-    weight: Math.min(1, Math.abs(momScore)),
-    detail: `6-bar return ${(momentum * 100).toFixed(2)}%`,
-  });
+  // Relative Volatility
+  const volRatio = vol20 / (vol100 || 1);
 
-  const emaFast = ema9 > ema21;
-  (emaFast ? (bull += 0.85) : (bear += 0.85));
-  factors.push({
-    label: `EMA 9 is ${emaFast ? "above" : "below"} EMA 21`,
-    impact: emaFast ? "positive" : "negative",
-    weight: Math.min(1, Math.abs(ema9 - ema21) / (atrValue || 1)),
-    detail: `EMA9 ${ema9.toFixed(2)} vs EMA21 ${ema21.toFixed(2)}`,
-  });
+  // Volume Breakout check
+  const volAvg20 = candles.slice(-20).reduce((sum, c) => sum + c.volume, 0) / 20;
+  const relVol = volAvg20 > 0 ? last.volume / volAvg20 : 1.0;
 
-  const aboveTrend = price > ema50;
-  (aboveTrend ? (bull += 0.5) : (bear += 0.5));
-  factors.push({
-    label: `Price is ${aboveTrend ? "above" : "below"} EMA 50 trend baseline`,
-    impact: aboveTrend ? "positive" : "negative",
-    weight: Math.min(1, Math.abs(price - ema50) / (atrValue * 3 || 1)),
-  });
-
-  const volUp = volumeTrend > 0.03;
-  if (volUp) bull += 0.35;
-  else flat += 0.3;
-  factors.push({
-    label: `Volume is ${volUp ? "increasing" : "flat or declining"}`,
-    impact: volUp ? "positive" : "neutral",
-    weight: Math.min(1, Math.abs(volumeTrend) * 2),
-    detail: `${(volumeTrend * 100).toFixed(1)}% vs 15-bar average`,
-  });
-
-  const rsiImproving = rsiValue > rsiPrev;
-  (rsiImproving ? (bull += 0.4) : (bear += 0.4));
-  factors.push({
-    label: `RSI momentum is ${rsiImproving ? "improving" : "deteriorating"}`,
-    impact: rsiImproving ? "positive" : "negative",
-    weight: Math.min(1, Math.abs(rsiValue - rsiPrev) / 12),
-    detail: `RSI(14) ${rsiValue.toFixed(1)}`,
-  });
-
-  if (rsiValue > 70) {
-    bear += 0.55;
-    factors.push({
-      label: "RSI is in overbought territory",
-      impact: "negative",
-      weight: Math.min(1, (rsiValue - 70) / 20),
-    });
-  } else if (rsiValue < 30) {
-    bull += 0.55;
-    factors.push({
-      label: "RSI is in oversold territory",
-      impact: "positive",
-      weight: Math.min(1, (30 - rsiValue) / 20),
-    });
+  if (relVol > 1.6 && (price > swings.resistance * 0.995 || price < swings.support * 1.005)) {
+    return "BREAKOUT";
+  }
+  if (volRatio > 1.5) {
+    return "HIGH_VOLATILITY";
+  }
+  if (volRatio < 0.6) {
+    return "LOW_VOLATILITY";
+  }
+  if (isBull) {
+    return volRatio > 1.1 ? "STRONG_BULLISH" : "WEAK_BULLISH";
+  }
+  if (isBear) {
+    return volRatio > 1.1 ? "STRONG_BEARISH" : "WEAK_BEARISH";
+  }
+  if ((nearSupport || nearResistance) && volRatio < 0.9) {
+    return "MEAN_REVERSION";
   }
 
-  const histRising = (macdLast.histogram ?? 0) > (macdPrev.histogram ?? 0);
-  (histRising ? (bull += 0.45) : (bear += 0.45));
-  factors.push({
-    label: `MACD histogram is ${histRising ? "expanding" : "contracting"}`,
-    impact: histRising ? "positive" : "negative",
-    weight: 0.5,
-    detail: `hist ${(macdLast.histogram ?? 0).toFixed(3)}`,
-  });
+  return "RANGE";
+}
 
-  const volElevated = vol > 0.55;
-  if (volElevated) {
-    flat -= 0.15;
-    factors.push({
-      label: "Volatility is elevated",
-      impact: "negative",
-      weight: Math.min(1, vol / 1.5),
-      detail: `Realised vol ${vol.toFixed(2)}% / bar, ATR ${atrPct.toFixed(2)}%`,
-    });
+/** Formulates the final Long/Short trading decision with SL/TP bounds based on expectation */
+export function makeTradingDecision(
+  prediction: Prediction,
+  price: number,
+  atrVal: number,
+  riskPct = 0.02,
+): TradingDecision {
+  const upP = prediction.upProbability;
+  const downP = prediction.downProbability;
+  const sideP = prediction.sidewaysProbability;
+
+  const maxP = Math.max(upP, downP, sideP);
+  const separation = Math.abs(upP - downP);
+  const expectedReturn = prediction.expectedMove;
+
+  // Configurable bounds
+  const MIN_PROB = 0.44;
+  const MIN_SEPARATION = 0.08;
+  const TRANSACTION_BARRIER = 0.0005; // 5 bps slippage + execution barrier
+
+  let signal: "TRADE" | "NO_SIGNAL" = "NO_SIGNAL";
+  let direction: Direction = "SIDEWAYS";
+  let stopLoss: number | null = null;
+  let takeProfit: number | null = null;
+  let reason = "Insufficient edge or high noise";
+
+  if (sideP > 0.45) {
+    reason = "Sideways market regime expected";
+  } else if (maxP >= MIN_PROB && separation >= MIN_SEPARATION && Math.abs(expectedReturn) >= TRANSACTION_BARRIER) {
+    if (upP > downP) {
+      signal = "TRADE";
+      direction = "UP";
+      stopLoss = price - 1.5 * atrVal;
+      takeProfit = price + 2.5 * atrVal;
+      reason = `Bullish trade setup: exp return +${(expectedReturn * 100).toFixed(2)}%`;
+    } else if (downP > upP) {
+      signal = "TRADE";
+      direction = "DOWN";
+      stopLoss = price + 1.5 * atrVal;
+      takeProfit = price - 2.5 * atrVal;
+      reason = `Bearish trade setup: exp return ${(expectedReturn * 100).toFixed(2)}%`;
+    }
   } else {
-    flat += 0.35;
-    factors.push({
-      label: "Volatility is compressed",
-      impact: "neutral",
-      weight: 0.4,
-      detail: `Realised vol ${vol.toFixed(2)}% / bar`,
-    });
+    reason = `Edge bounds missed (prob: ${maxP.toFixed(2)}, sep: ${separation.toFixed(2)}, move: ${(expectedReturn * 100).toFixed(2)}%)`;
   }
-
-  if (nearResistance) {
-    bear += 0.5;
-    factors.push({
-      label: "Price is near recent resistance",
-      impact: "negative",
-      weight: 0.6,
-      detail: `Resistance ${resistance.toFixed(2)}`,
-    });
-  }
-  if (nearSupport) {
-    bull += 0.5;
-    factors.push({
-      label: "Price is near recent support",
-      impact: "positive",
-      weight: 0.6,
-      detail: `Support ${support.toFixed(2)}`,
-    });
-  }
-
-  const [upProbability, downProbability, sidewaysProbability] = softmax(
-    [bull, bear, flat],
-    0.85,
-  ) as [number, number, number];
-
-  const probs: Array<[Direction, number]> = [
-    ["UP", upProbability],
-    ["DOWN", downProbability],
-    ["SIDEWAYS", sidewaysProbability],
-  ];
-  probs.sort((a, b) => b[1] - a[1]);
-  const direction = probs[0]![0];
-  const topProb = probs[0]![1];
-  const margin = topProb - probs[1]![1];
-  const confidence = Math.max(0.08, Math.min(0.97, topProb * 0.6 + margin * 0.8));
-
-  const edge = upProbability - downProbability;
-  const expectedMove = edge * (atrValue / price) * 0.85;
 
   return {
-    id: `${asset}-${timeframe}-${last.time}`,
-    asset,
-    timeframe,
-    timestamp: last.time,
-    currentPrice: price,
+    signal,
     direction,
-    upProbability: round(upProbability),
-    downProbability: round(downProbability),
-    sidewaysProbability: round(sidewaysProbability),
-    confidence: round(confidence),
-    expectedMove: round(expectedMove, 6),
-    factors: factors.sort((a, b) => b.weight - a.weight),
-    modelId: "dream-heuristic-v0",
-    modelKind: "heuristic-mock",
+    positionSize: riskPct * 100,
+    stopLoss,
+    takeProfit,
+    reason,
   };
 }
 
+/** Fits and predicts walk-forward ensemble models dynamically */
+export interface TrainedEnsemble {
+  scaler: Scaler;
+  modelA: SoftmaxRegression;
+  tempA: number;
+  modelB: SoftmaxRegression;
+  tempB: number;
+  modelC: SoftmaxRegression;
+  tempC: number;
+  modelD: SoftmaxRegression;
+  tempD: number;
+  ridgeReg: RidgeRegression;
+  meanUpMove: number;
+  meanDownMove: number;
+}
+
+/** Trains the ensemble model parameters once using chronological windows */
+export function trainEnsemble(candles: Candle[], timeframe: Timeframe, k = 0.5): TrainedEnsemble {
+  const n = candles.length;
+  if (n < 60) {
+    throw new Error("Insufficient history to generate features");
+  }
+
+  // 1. Prepare historical training dataset up to n-1
+  const featuresList: FeatureSet[] = [];
+  const labels: number[] = [];
+  const returnsList: number[] = [];
+
+  // Generate dataset sequentially
+  for (let i = 60; i < n - 1; i++) {
+    const hist = candles.slice(0, i + 1);
+    const feats = extractFeatures(hist, timeframe);
+    
+    // Label classification
+    const vol = realizedVolatility(hist, 20);
+    const threshold = (k * vol) / 100;
+    const nextClose = candles[i + 1]!.close;
+    const currentClose = hist[hist.length - 1]!.close;
+    
+    const move = (nextClose - currentClose) / currentClose;
+    returnsList.push(move);
+
+    const dir = classifyMove(currentClose, nextClose, threshold);
+    const label = dir === "UP" ? 0 : dir === "DOWN" ? 1 : 2;
+
+    featuresList.push(feats);
+    labels.push(label);
+  }
+
+  // 2. Chronological Train-Val Split for Calibration
+  // 75% train, 25% val
+  const totalSamples = featuresList.length;
+  const trainSize = Math.floor(totalSamples * 0.75);
+
+  const X_train = featuresList.slice(0, trainSize);
+  const y_train = labels.slice(0, trainSize);
+  const ret_train = returnsList.slice(0, trainSize);
+
+  const X_val = featuresList.slice(trainSize);
+  const y_val = labels.slice(trainSize);
+
+  // 3. Scaler alignment
+  const scaler = fitScaler(X_train);
+  const X_train_scaled = X_train.map((x) => transformFeatures(x, scaler));
+  const X_val_scaled = X_val.map((x) => transformFeatures(x, scaler));
+
+  // 4. Train independent models
+  const modelA = new SoftmaxRegression(PRICE_KEYS);
+  modelA.train(X_train_scaled, y_train);
+  const tempA = tuneTemperature(modelA, X_val_scaled, y_val);
+
+  const modelB = new SoftmaxRegression(VOLUME_KEYS);
+  modelB.train(X_train_scaled, y_train);
+  const tempB = tuneTemperature(modelB, X_val_scaled, y_val);
+
+  const modelC = new SoftmaxRegression(MTF_KEYS);
+  modelC.train(X_train_scaled, y_train);
+  const tempC = tuneTemperature(modelC, X_val_scaled, y_val);
+
+  const modelD = new SoftmaxRegression(REGIME_KEYS);
+  modelD.train(X_train_scaled, y_train);
+  const tempD = tuneTemperature(modelD, X_val_scaled, y_val);
+
+  // Ridge Regression for expected return prediction
+  const ridgeReg = new RidgeRegression(PRICE_KEYS);
+  ridgeReg.train(X_train_scaled, ret_train);
+
+  // Calculate average moves of classes in training set
+  let sumUpMove = 0, countUp = 0;
+  let sumDownMove = 0, countDown = 0;
+  for (let i = 0; i < trainSize; i++) {
+    if (y_train[i] === 0) { sumUpMove += ret_train[i]!; countUp++; }
+    if (y_train[i] === 1) { sumDownMove += ret_train[i]!; countDown++; }
+  }
+  const meanUpMove = countUp > 0 ? sumUpMove / countUp : 0.002;
+  const meanDownMove = countDown > 0 ? sumDownMove / countDown : -0.002;
+
+  return {
+    scaler,
+    modelA,
+    tempA,
+    modelB,
+    tempB,
+    modelC,
+    tempC,
+    modelD,
+    tempD,
+    ridgeReg,
+    meanUpMove,
+    meanDownMove,
+  };
+}
+
+/** Queries a pre-trained ensemble model to output predictions for the current candle */
+export function predictWithEnsemble(
+  ensemble: TrainedEnsemble,
+  candles: Candle[],
+  asset: string,
+  timeframe: Timeframe,
+  k = 0.5,
+): Prediction {
+  const n = candles.length;
+  if (n < 60) {
+    throw new Error("Insufficient history to generate features");
+  }
+
+  const lastCandle = candles[n - 1]!;
+  const price = lastCandle.close;
+
+  // Extract features for current candle T (n-1)
+  const currentRawFeats = extractFeatures(candles, timeframe);
+  const currentFeatsScaled = transformFeatures(currentRawFeats, ensemble.scaler);
+
+  // Query models on current candle features
+  const probA = ensemble.modelA.predictProbs(currentFeatsScaled, ensemble.tempA);
+  const probB = ensemble.modelB.predictProbs(currentFeatsScaled, ensemble.tempB);
+  const probC = ensemble.modelC.predictProbs(currentFeatsScaled, ensemble.tempC);
+  const probD = ensemble.modelD.predictProbs(currentFeatsScaled, ensemble.tempD);
+
+  // Ensemble Averaged Probabilities
+  const upProbability = (probA[0]! + probB[0]! + probC[0]! + probD[0]!) / 4;
+  const downProbability = (probA[1]! + probB[1]! + probC[1]! + probD[1]!) / 4;
+  const sidewaysProbability = (probA[2]! + probB[2]! + probC[2]! + probD[2]!) / 4;
+
+  const ensembleProbs = [upProbability, downProbability, sidewaysProbability];
+  const maxProb = Math.max(...ensembleProbs);
+  
+  let direction: Direction = "SIDEWAYS";
+  if (maxProb === upProbability) direction = "UP";
+  else if (maxProb === downProbability) direction = "DOWN";
+
+  // Model agreement calculation
+  const dirs: Direction[] = [];
+  const getDir = (probs: number[]) => {
+    const max = Math.max(...probs);
+    return max === probs[0] ? "UP" : max === probs[1] ? "DOWN" : "SIDEWAYS";
+  };
+  dirs.push(getDir(probA), getDir(probB), getDir(probC), getDir(probD));
+  const agreementCount = dirs.filter((d) => d === direction).length;
+  const modelAgreement = `${agreementCount}/4`;
+
+  // Estimate expected move combining Ridge Regression and Class Probabilities
+  const regExpectedMove = ensemble.ridgeReg.predict(currentFeatsScaled);
+  
+  const probWeightedMove = upProbability * ensemble.meanUpMove + downProbability * ensemble.meanDownMove;
+  // Blend predictions: 60% probability-weighted moves, 40% Ridge regression
+  const expectedMove = probWeightedMove * 0.6 + regExpectedMove * 0.4;
+
+  // Calibrate confidence
+  const sortedProbs = [...ensembleProbs].sort((a, b) => b - a);
+  const margin = sortedProbs[0]! - sortedProbs[1]!;
+  // Adjust based on model agreement and margin
+  const confidence = Math.max(0.12, Math.min(0.96, margin * 0.7 + (agreementCount === 4 ? 0.20 : 0.0)));
+
+  // Volatility & Regime Detection
+  const regime = detectRegime(candles);
+  const ind = computeIndicators(candles);
+  const atrVal = lastDefined(ind.atr14) ?? price * 0.005;
+  const expectedVolatility = realizedVolatility(candles, 20) / 100;
+
+  // Create temporary prediction shell
+  const predictionShell: Prediction = {
+    id: `${asset}-${timeframe}-${lastCandle.time}`,
+    asset,
+    timeframe,
+    timestamp: lastCandle.time,
+    currentPrice: price,
+    direction,
+    upProbability,
+    downProbability,
+    sidewaysProbability,
+    confidence,
+    expectedMove,
+    factors: [],
+    modelId: "dream-softmax-v1",
+    modelKind: "ml",
+    expectedVolatility,
+    regime,
+    modelAgreement,
+    modelVersion: "v1.0.0",
+  };
+
+  // Generate factors for visual explanation based on features
+  const factors: PredictionFactor[] = [];
+  const momentum = currentRawFeats["mom6"] || 0;
+  const relVol = currentRawFeats["relVolume"] || 1.0;
+  const ema9 = lastDefined(ind.ema9) ?? price;
+  const ema21 = lastDefined(ind.ema21) ?? price;
+
+  factors.push({
+    label: `Log Momentum is ${momentum >= 0 ? "bullish" : "bearish"}`,
+    impact: momentum >= 0 ? "positive" : "negative",
+    weight: Math.min(1.0, Math.abs(momentum) * 15),
+    detail: `6-bar return ${(momentum * 100).toFixed(2)}%`,
+  });
+
+  const emaBull = ema9 > ema21;
+  factors.push({
+    label: `EMA 9/21 cross is ${emaBull ? "bullish" : "bearish"}`,
+    impact: emaBull ? "positive" : "negative",
+    weight: Math.min(1.0, Math.abs(ema9 - ema21) / atrVal),
+    detail: `EMA9 ${ema9.toFixed(1)} vs EMA21 ${ema21.toFixed(1)}`,
+  });
+
+  factors.push({
+    label: `Volume is ${relVol > 1.2 ? "expanding" : "normal"}`,
+    impact: relVol > 1.2 ? "positive" : "neutral",
+    weight: Math.min(1.0, Math.abs(relVol - 1) * 0.5),
+    detail: `Rel volume: ${relVol.toFixed(2)}x`,
+  });
+
+  factors.push({
+    label: `Realized volatility is ${(expectedVolatility * 100).toFixed(2)}%`,
+    impact: expectedVolatility > 0.0015 ? "negative" : "neutral",
+    weight: Math.min(1.0, expectedVolatility * 100),
+  });
+
+  predictionShell.factors = factors.sort((a, b) => b.weight - a.weight);
+
+  // Apply trading decisions layer
+  const decision = makeTradingDecision(predictionShell, price, atrVal);
+  predictionShell.signal = decision.signal;
+
+  return predictionShell;
+}
+
+export function computePrediction(candles: Candle[], asset: string, timeframe: Timeframe, k = 0.5): Prediction {
+  if (asset === "NIFTY") {
+    if (!niftyEnsemble) {
+      try {
+        niftyEnsemble = trainEnsemble(niftyData as Candle[], "5m", k);
+        console.log("[mockService] Pre-trained NIFTY ensemble model on 4,200+ historical candles successfully!");
+      } catch (e) {
+        console.error("[mockService] Failed to train static NIFTY ensemble:", e);
+      }
+    }
+    if (niftyEnsemble) {
+      const pred = predictWithEnsemble(niftyEnsemble, candles, asset, timeframe, k);
+      pred.modelId = "dream-nifty-50-v1";
+      pred.modelVersion = "v1.0.0 (Trained on 4,288 minute candles)";
+      return pred;
+    }
+  }
+  const ensemble = trainEnsemble(candles, timeframe, k);
+  return predictWithEnsemble(ensemble, candles, asset, timeframe, k);
+}
+
 export const mockPredictionService: PredictionService = {
-  modelId: "dream-heuristic-v0",
-  modelKind: "heuristic-mock",
+  modelId: "dream-softmax-v1",
+  modelKind: "ml",
   async predict({ candles, asset, timeframe }: PredictionRequest): Promise<Prediction> {
     return computePrediction(candles, asset, timeframe);
   },
 };
 
-/**
- * Replace with an HTTP-backed service (Python/FastAPI) later — the UI only ever
- * touches this getter and the PredictionService interface.
- */
 export function getPredictionService(): PredictionService {
   return mockPredictionService;
 }

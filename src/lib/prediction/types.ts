@@ -28,12 +28,27 @@ export interface Prediction {
   factors: PredictionFactor[];
   modelId: string;
   modelKind: "heuristic-mock" | "ml";
+  // Advanced Quant Fields
+  expectedVolatility?: number;
+  regime?: string;
+  signal?: "TRADE" | "NO_SIGNAL";
+  modelAgreement?: string;
+  modelVersion?: string;
 }
 
 export interface PredictionRequest {
   asset: string;
   timeframe: Timeframe;
   candles: Candle[];
+}
+
+export interface TradingDecision {
+  signal: "TRADE" | "NO_SIGNAL";
+  direction: Direction;
+  positionSize: number; // percentage or notional
+  stopLoss: number | null;
+  takeProfit: number | null;
+  reason: string;
 }
 
 export interface PredictionService {
