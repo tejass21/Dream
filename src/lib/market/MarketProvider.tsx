@@ -70,7 +70,7 @@ const DEFAULT_TOGGLES: IndicatorToggles = {
 };
 
 export function MarketProvider({ children }: { children: ReactNode }) {
-  const [symbol, setSymbol] = useState("BTC/USDT");
+  const [symbol, setSymbol] = useState("NIFTY");
   const [timeframe, setTimeframe] = useState<Timeframe>("5m");
   const [candles, setCandles] = useState<Candle[]>([]);
   const [loading, setLoading] = useState(true);

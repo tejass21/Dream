@@ -266,9 +266,16 @@ const fetchYahooDirect = createServerFn({ method: "GET" })
     const { symbol, timeframe } = ctx.data;
     const yahooSymbol = getYahooSymbol(symbol);
     const { interval, range } = mapYahooTimeframe(timeframe);
-    const yfUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=${interval}&range=${range}`;
+    const yfUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?interval=${interval}&range=${range}`;
 
-    const response = await fetch(yfUrl);
+    const response = await fetch(yfUrl, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json",
+        "Referer": "https://finance.yahoo.com",
+      },
+    });
     if (!response.ok) {
       throw new Error(`Yahoo Finance API error: ${response.statusText}`);
     }
@@ -293,25 +300,67 @@ async function fetchYahooCandles(symbol: string, timeframe: Timeframe): Promise<
   const closes = quote.close || [];
   const volumes = quote.volume || [];
 
-  const candles: Candle[] = timestamps
-    .map((time: number, idx: number) => ({
-      time,
-      open: opens[idx] ?? closes[idx] ?? 0,
-      high: highs[idx] ?? closes[idx] ?? 0,
-      low: lows[idx] ?? closes[idx] ?? 0,
-      close: closes[idx] ?? 0,
-      volume: volumes[idx] ?? 0,
-    }))
-    .filter((c: Candle) => c.close > 0);
+  const { interval } = mapYahooTimeframe(timeframe);
+  const step =
+    interval === "1m"
+      ? 60
+      : interval === "5m"
+        ? 300
+        : interval === "15m"
+          ? 900
+          : interval === "1h"
+            ? 3600
+            : interval === "1d"
+              ? 86400
+              : 300;
+
+  // Align and deduplicate/merge candles by interval timestamp
+  const candlesMap = new Map<number, Candle>();
+
+  for (let idx = 0; idx < timestamps.length; idx++) {
+    const time = timestamps[idx];
+    const open = opens[idx];
+    const high = highs[idx];
+    const low = lows[idx];
+    const close = closes[idx];
+    const volume = volumes[idx];
+
+    // Skip empty or invalid data points
+    if (close === null || close <= 0) {
+      continue;
+    }
+
+    const alignedTime = time - (time % step);
+    const existing = candlesMap.get(alignedTime);
+
+    if (!existing) {
+      candlesMap.set(alignedTime, {
+        time: alignedTime,
+        open: open ?? close,
+        high: high ?? close,
+        low: low ?? close,
+        close: close,
+        volume: volume ?? 0,
+      });
+    } else {
+      // Merge: keep first open, take highest high, lowest low, latest close, and add volume
+      existing.high = Math.max(existing.high, high ?? close);
+      existing.low = Math.min(existing.low, low ?? close);
+      existing.close = close;
+      existing.volume += volume ?? 0;
+    }
+  }
+
+  const candles = Array.from(candlesMap.values()).sort((a, b) => a.time - b.time);
 
   // Aggregate 1-hour candles into 4-hour candles if timeframe is 4h
   if (timeframe === "4h") {
     const aggregated: Candle[] = [];
-    const step = 4 * 3600;
+    const step4h = 4 * 3600;
     for (let i = 0; i < candles.length; i++) {
       const c = candles[i];
       if (!c) continue;
-      const periodStart = c.time - (c.time % step);
+      const periodStart = c.time - (c.time % step4h);
       let group = aggregated.find((g) => g.time === periodStart);
       if (!group) {
         group = {
