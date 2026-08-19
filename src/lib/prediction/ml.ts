@@ -1,14 +1,9 @@
 import type { Candle, Timeframe } from "../market/types";
-import { realizedVolatility, atr } from "../market/indicators";
 import type { Direction } from "./types";
 
 // ==========================================
 // 1. Feature Engineering & Multi-Timeframe
 // ==========================================
-
-export interface FeatureSet {
-  [key: string]: number;
-}
 
 /** Aggregates lower timeframe candles into higher timeframe candles up to current time (no future leakage) */
 export function aggregateCandles(candles: Candle[], targetPeriodSeconds: number): Candle[] {
@@ -67,10 +62,13 @@ export function extractFeatures(candles: Candle[], timeframe: Timeframe): Featur
   const last = candles[n - 1]!;
   const price = last.close;
 
-  // --- Category A: Price Structure ---
+  // --- Category A: Price Structure (Raw Dataset-derived returns) ---
   features["ret1"] = (price - candles[n - 2]!.close) / candles[n - 2]!.close;
+  features["ret2"] = (price - candles[n - 3]!.close) / candles[n - 3]!.close;
   features["ret3"] = (price - candles[Math.max(0, n - 4)]!.close) / candles[Math.max(0, n - 4)]!.close;
   features["ret5"] = (price - candles[Math.max(0, n - 6)]!.close) / candles[Math.max(0, n - 6)]!.close;
+  features["ret8"] = (price - candles[Math.max(0, n - 9)]!.close) / (candles[Math.max(0, n - 9)]!.close || 1);
+  features["ret13"] = (price - candles[Math.max(0, n - 14)]!.close) / (candles[Math.max(0, n - 14)]!.close || 1);
   features["mom6"] = Math.log(price / (candles[Math.max(0, n - 7)]!.close || 1));
 
   const hlRange = last.high - last.low;
@@ -85,26 +83,16 @@ export function extractFeatures(candles: Candle[], timeframe: Timeframe): Featur
   features["distRollingHigh40"] = max40 > 0 ? (max40 - price) / price : 0;
   features["distRollingLow40"] = min40 > 0 ? (price - min40) / price : 0;
 
-  // --- Category B: Volatility ---
-  const vol20 = realizedVolatility(candles, 20);
-  const vol60 = realizedVolatility(candles, 60);
-  features["volRatio"] = vol60 > 0 ? vol20 / vol60 : 1;
-  features["realizedVol"] = vol20 / 100; // in fractional terms
-
-  const trs = atr(candles, 14);
-  const atrVal = trs[trs.length - 1] ?? price * 0.005;
-  features["atrPct"] = price > 0 ? atrVal / price : 0.005;
-
-  // --- Category C: Volume ---
+  // --- Category B: Volume (Raw Dataset scaling) ---
   const volAvg20 = candles.slice(-20).reduce((a, c) => a + c.volume, 0) / 20;
   features["relVolume"] = volAvg20 > 0 ? last.volume / volAvg20 : 1.0;
   features["volChange"] = n > 2 ? (last.volume - candles[n - 2]!.volume) / (candles[n - 2]!.volume || 1) : 0;
   features["priceVolumeInt"] = features["ret1"] * features["relVolume"];
 
-  // --- Category D: Market Structure ---
+  // --- Category C: Market Structure (Pure Swing points relative to price) ---
   const swings = getSwingPoints(candles, 20);
-  features["distSupport"] = atrVal > 0 ? (price - swings.support) / atrVal : 0;
-  features["distResistance"] = atrVal > 0 ? (swings.resistance - price) / atrVal : 0;
+  features["distSupport"] = price > 0 ? (price - swings.support) / price : 0;
+  features["distResistance"] = price > 0 ? (swings.resistance - price) / price : 0;
 
   let consecutive = 0;
   for (let i = n - 1; i >= Math.max(0, n - 6); i--) {
@@ -119,24 +107,7 @@ export function extractFeatures(candles: Candle[], timeframe: Timeframe): Featur
   }
   features["consecutiveDir"] = consecutive;
 
-  // --- Category E: Multi-Timeframe Context ---
-  // If timeframe is 5m, higher is 15m (3x) and 1h (12x)
-  let tfSeconds = 300;
-  if (timeframe === "1m") tfSeconds = 60;
-  else if (timeframe === "15m") tfSeconds = 900;
-  else if (timeframe === "1h") tfSeconds = 3600;
-
-  const candles15m = aggregateCandles(candles, tfSeconds * 3);
-  if (candles15m.length > 5) {
-    const last15 = candles15m[candles15m.length - 1]!;
-    features["tfHigher_ret1"] = (last15.close - candles15m[candles15m.length - 2]!.close) / candles15m[candles15m.length - 2]!.close;
-    features["tfHigher_closeLoc"] = (last15.high - last15.low) > 0 ? (last15.close - last15.low) / (last15.high - last15.low) : 0.5;
-  } else {
-    features["tfHigher_ret1"] = features["ret1"];
-    features["tfHigher_closeLoc"] = features["closeLocation"];
-  }
-
-  // --- Category F: Time of Day ---
+  // --- Category D: Time of Day ---
   const date = new Date(last.time * 1000);
   features["hour"] = date.getUTCHours() / 24;
   features["dayOfWeek"] = date.getUTCDay() / 7;

@@ -1,4 +1,3 @@
-import { computeIndicators, lastDefined, realizedVolatility } from "../market/indicators";
 import type { Candle, Timeframe } from "../market/types";
 import niftyData from "./nifty_data.json";
 
@@ -26,63 +25,54 @@ import {
 import { classifyMove } from "./backtest";
 
 // Model feature partitions
-const PRICE_KEYS = ["ret1", "ret3", "ret5", "mom6", "bodyPct", "upperWickPct", "lowerWickPct", "closeLocation", "distRollingHigh40", "distRollingLow40"];
+const PRICE_KEYS = ["ret1", "ret2", "ret3", "ret5", "ret8", "bodyPct", "upperWickPct", "lowerWickPct", "closeLocation", "distRollingHigh40", "distRollingLow40"];
 const VOLUME_KEYS = [...PRICE_KEYS, "relVolume", "volChange", "priceVolumeInt"];
-const MTF_KEYS = ["ret1", "mom6", "closeLocation", "tfHigher_ret1", "tfHigher_closeLoc"];
-const REGIME_KEYS = ["volRatio", "realizedVol", "atrPct", "distSupport", "distResistance", "consecutiveDir", "hour", "dayOfWeek"];
+const MTF_KEYS = ["ret1", "mom6", "closeLocation", "distSupport", "distResistance"];
+const REGIME_KEYS = ["consecutiveDir", "hour", "dayOfWeek", "distSupport", "distResistance"];
 
 const ALL_KEYS = Array.from(new Set([...PRICE_KEYS, ...VOLUME_KEYS, ...MTF_KEYS, ...REGIME_KEYS]));
 
 /** Detects the current market regime based on structural rules and indicators */
 export function detectRegime(candles: Candle[]): string {
   const n = candles.length;
-  if (n < 60) return "RANGE";
+  if (n < 20) return "RANGE";
 
   const last = candles[n - 1]!;
   const price = last.close;
 
-  // Indicators
-  const ind = computeIndicators(candles);
-  const ema9 = lastDefined(ind.ema9) ?? price;
-  const ema21 = lastDefined(ind.ema21) ?? price;
-  const ema50 = lastDefined(ind.ema50) ?? price;
-  const vol20 = realizedVolatility(candles, 20);
-  const vol100 = realizedVolatility(candles, 100) || vol20;
+  // Simple volume and price returns
+  const last20 = candles.slice(-20);
+  const meanClose = last20.reduce((s, c) => s + c.close, 0) / 20;
 
-  const isBull = ema9 > ema21 && ema21 > ema50 && price > ema9;
-  const isBear = ema9 < ema21 && ema21 < ema50 && price < ema9;
+  // Simple price momentum
+  const isBull = price > meanClose * 1.002;
+  const isBear = price < meanClose * 0.998;
 
-  // Swing analysis
-  const swings = getSwingPoints(candles, 20);
-  const atrVal = lastDefined(ind.atr14) ?? price * 0.005;
-
-  const nearResistance = (swings.resistance - price) / (atrVal || 1) < 1.0;
-  const nearSupport = (price - swings.support) / (atrVal || 1) < 1.0;
-
-  // Relative Volatility
-  const volRatio = vol20 / (vol100 || 1);
+  // Volatility as simple close range
+  const maxClose = Math.max(...last20.map((c) => c.close));
+  const minClose = Math.min(...last20.map((c) => c.close));
+  const rangePct = (maxClose - minClose) / meanClose;
 
   // Volume Breakout check
-  const volAvg20 = candles.slice(-20).reduce((sum, c) => sum + c.volume, 0) / 20;
+  const volAvg20 = last20.reduce((sum, c) => sum + c.volume, 0) / 20;
   const relVol = volAvg20 > 0 ? last.volume / volAvg20 : 1.0;
+
+  const swings = getSwingPoints(candles, 20);
 
   if (relVol > 1.6 && (price > swings.resistance * 0.995 || price < swings.support * 1.005)) {
     return "BREAKOUT";
   }
-  if (volRatio > 1.5) {
+  if (rangePct > 0.02) {
     return "HIGH_VOLATILITY";
   }
-  if (volRatio < 0.6) {
+  if (rangePct < 0.005) {
     return "LOW_VOLATILITY";
   }
   if (isBull) {
-    return volRatio > 1.1 ? "STRONG_BULLISH" : "WEAK_BULLISH";
+    return "STRONG_BULLISH";
   }
   if (isBear) {
-    return volRatio > 1.1 ? "STRONG_BEARISH" : "WEAK_BEARISH";
-  }
-  if ((nearSupport || nearResistance) && volRatio < 0.9) {
-    return "MEAN_REVERSION";
+    return "STRONG_BEARISH";
   }
 
   return "RANGE";
@@ -176,13 +166,13 @@ export function trainEnsemble(candles: Candle[], timeframe: Timeframe, k = 0.5):
   for (let i = 60; i < n - 1; i++) {
     const hist = candles.slice(0, i + 1);
     const feats = extractFeatures(hist, timeframe);
-    
+
     // Label classification
     const vol = realizedVolatility(hist, 20);
     const threshold = (k * vol) / 100;
     const nextClose = candles[i + 1]!.close;
     const currentClose = hist[hist.length - 1]!.close;
-    
+
     const move = (nextClose - currentClose) / currentClose;
     returnsList.push(move);
 
@@ -290,7 +280,7 @@ export function predictWithEnsemble(
 
   const ensembleProbs = [upProbability, downProbability, sidewaysProbability];
   const maxProb = Math.max(...ensembleProbs);
-  
+
   let direction: Direction = "SIDEWAYS";
   if (maxProb === upProbability) direction = "UP";
   else if (maxProb === downProbability) direction = "DOWN";
@@ -307,7 +297,7 @@ export function predictWithEnsemble(
 
   // Estimate expected move combining Ridge Regression and Class Probabilities
   const regExpectedMove = ensemble.ridgeReg.predict(currentFeatsScaled);
-  
+
   const probWeightedMove = upProbability * ensemble.meanUpMove + downProbability * ensemble.meanDownMove;
   // Blend predictions: 60% probability-weighted moves, 40% Ridge regression
   const expectedMove = probWeightedMove * 0.6 + regExpectedMove * 0.4;
@@ -318,11 +308,22 @@ export function predictWithEnsemble(
   // Adjust based on model agreement and margin
   const confidence = Math.max(0.12, Math.min(0.96, margin * 0.7 + (agreementCount === 4 ? 0.20 : 0.0)));
 
-  // Volatility & Regime Detection
+  // Volatility & Regime Detection (Pure Dataset metrics, no indicators)
   const regime = detectRegime(candles);
-  const ind = computeIndicators(candles);
-  const atrVal = lastDefined(ind.atr14) ?? price * 0.005;
-  const expectedVolatility = realizedVolatility(candles, 20) / 100;
+  const avgRange = candles.slice(-14).reduce((sum, c) => sum + (c.high - c.low), 0) / 14;
+  const atrVal = avgRange || price * 0.005;
+
+  const slice = candles.slice(-21);
+  let expectedVolatility = 0.01;
+  if (slice.length >= 2) {
+    const rets = [];
+    for (let i = 1; i < slice.length; i++) {
+      rets.push(Math.log(slice[i]!.close / slice[i - 1]!.close));
+    }
+    const mean = rets.reduce((a, b) => a + b, 0) / rets.length;
+    const variance = rets.reduce((a, b) => a + (b - mean) ** 2, 0) / (rets.length - 1);
+    expectedVolatility = Math.sqrt(variance);
+  }
 
   // Create temporary prediction shell
   const predictionShell: Prediction = {
@@ -346,12 +347,12 @@ export function predictWithEnsemble(
     modelVersion: "v1.0.0",
   };
 
-  // Generate factors for visual explanation based on features
+  // Generate factors for visual explanation based on features (Dataset-only)
   const factors: PredictionFactor[] = [];
   const momentum = currentRawFeats["mom6"] || 0;
   const relVol = currentRawFeats["relVolume"] || 1.0;
-  const ema9 = lastDefined(ind.ema9) ?? price;
-  const ema21 = lastDefined(ind.ema21) ?? price;
+  const sma9 = candles.slice(-9).reduce((sum, c) => sum + c.close, 0) / 9;
+  const sma21 = candles.slice(-21).reduce((sum, c) => sum + c.close, 0) / 21;
 
   factors.push({
     label: `Log Momentum is ${momentum >= 0 ? "bullish" : "bearish"}`,
@@ -360,12 +361,12 @@ export function predictWithEnsemble(
     detail: `6-bar return ${(momentum * 100).toFixed(2)}%`,
   });
 
-  const emaBull = ema9 > ema21;
+  const smaBull = sma9 > sma21;
   factors.push({
-    label: `EMA 9/21 cross is ${emaBull ? "bullish" : "bearish"}`,
-    impact: emaBull ? "positive" : "negative",
-    weight: Math.min(1.0, Math.abs(ema9 - ema21) / atrVal),
-    detail: `EMA9 ${ema9.toFixed(1)} vs EMA21 ${ema21.toFixed(1)}`,
+    label: `SMA 9/21 cross is ${smaBull ? "bullish" : "bearish"}`,
+    impact: smaBull ? "positive" : "negative",
+    weight: Math.min(1.0, Math.abs(sma9 - sma21) / atrVal),
+    detail: `SMA9 ${sma9.toFixed(1)} vs SMA21 ${sma21.toFixed(1)}`,
   });
 
   factors.push({

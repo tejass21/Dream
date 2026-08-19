@@ -216,371 +216,371 @@ function AnalyticsContent() {
       ) : (
         <>
           {/* KPI Row */}
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-6">
-        <KpiCard label="Overall accuracy" value={`${(metrics.accuracy * 100).toFixed(1)}%`} />
-        <KpiCard label="Brier Score (Cal.)" value={metrics.brierScore.toFixed(4)} sub="lower is better" />
-        <KpiCard label="Log Loss (Entropy)" value={metrics.logLoss.toFixed(4)} sub="lower is better" />
-        <KpiCard label="Total predictions" value={`${metrics.total}`} />
-        <KpiCard label="Correct / incorrect" value={`${metrics.correct} / ${metrics.incorrect}`} />
-        <KpiCard
-          label="Avg confidence"
-          value={`${(metrics.avgConfidence * 100).toFixed(0)}%`}
-          sub={`trades: ${metrics.tradesCount} / no: ${metrics.noSignalsCount}`}
-        />
-      </div>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-6">
+            <KpiCard label="Overall accuracy" value={`${(metrics.accuracy * 100).toFixed(1)}%`} />
+            <KpiCard label="Brier Score (Cal.)" value={metrics.brierScore.toFixed(4)} sub="lower is better" />
+            <KpiCard label="Log Loss (Entropy)" value={metrics.logLoss.toFixed(4)} sub="lower is better" />
+            <KpiCard label="Total predictions" value={`${metrics.total}`} />
+            <KpiCard label="Correct / incorrect" value={`${metrics.correct} / ${metrics.incorrect}`} />
+            <KpiCard
+              label="Avg confidence"
+              value={`${(metrics.avgConfidence * 100).toFixed(0)}%`}
+              sub={`trades: ${metrics.tradesCount} / no: ${metrics.noSignalsCount}`}
+            />
+          </div>
 
-      <div className="grid gap-3 lg:grid-cols-2">
-        {/* Confusion Matrix Panel */}
-        <Panel title="Confusion matrix (predicted vs actual)" bodyClassName="p-3">
-          <div className="overflow-x-auto">
-            <table className="w-full num text-[11px]">
-              <thead>
-                <tr>
-                  <th className="label-xs py-1 text-left">Pred ↓ / Act →</th>
-                  {DIRECTIONS.map((d) => (
-                    <th key={d} className="label-xs py-1 text-right">
-                      {d}
-                    </th>
-                  ))}
-                  <th className="label-xs py-1 text-right">Precision</th>
-                  <th className="label-xs py-1 text-right">Recall</th>
-                  <th className="label-xs py-1 text-right">F1</th>
-                </tr>
-              </thead>
-              <tbody>
-                {DIRECTIONS.map((pred) => (
-                  <tr key={pred} className="border-t border-panel-border">
-                    <td className="py-1.5 font-semibold text-muted-foreground">{pred}</td>
-                    {DIRECTIONS.map((act) => {
-                      const value = metrics.matrix[pred][act];
-                      const hit = pred === act;
-                      return (
-                        <td
-                          key={act}
-                          className={cn(
-                            "py-1.5 text-right font-semibold",
-                            hit ? "text-bull" : value > 0 ? "text-bear" : "text-muted-foreground",
-                          )}
-                        >
-                          {value}
+          <div className="grid gap-3 lg:grid-cols-2">
+            {/* Confusion Matrix Panel */}
+            <Panel title="Confusion matrix (predicted vs actual)" bodyClassName="p-3">
+              <div className="overflow-x-auto">
+                <table className="w-full num text-[11px]">
+                  <thead>
+                    <tr>
+                      <th className="label-xs py-1 text-left">Pred ↓ / Act →</th>
+                      {DIRECTIONS.map((d) => (
+                        <th key={d} className="label-xs py-1 text-right">
+                          {d}
+                        </th>
+                      ))}
+                      <th className="label-xs py-1 text-right">Precision</th>
+                      <th className="label-xs py-1 text-right">Recall</th>
+                      <th className="label-xs py-1 text-right">F1</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {DIRECTIONS.map((pred) => (
+                      <tr key={pred} className="border-t border-panel-border">
+                        <td className="py-1.5 font-semibold text-muted-foreground">{pred}</td>
+                        {DIRECTIONS.map((act) => {
+                          const value = metrics.matrix[pred][act];
+                          const hit = pred === act;
+                          return (
+                            <td
+                              key={act}
+                              className={cn(
+                                "py-1.5 text-right font-semibold",
+                                hit ? "text-bull" : value > 0 ? "text-bear" : "text-muted-foreground",
+                              )}
+                            >
+                              {value}
+                            </td>
+                          );
+                        })}
+                        <td className="py-1.5 text-right text-foreground font-semibold">
+                          {(metrics.precision[pred] * 100).toFixed(1)}%
                         </td>
+                        <td className="py-1.5 text-right text-foreground">
+                          {(metrics.recall[pred] * 100).toFixed(1)}%
+                        </td>
+                        <td className="py-1.5 text-right text-primary">
+                          {metrics.f1[pred].toFixed(2)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="mt-3 h-[100px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <ComposedChart data={accuracyBuckets} margin={{ top: 4, right: 4, bottom: 0, left: -20 }}>
+                    <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false} />
+                    <XAxis dataKey="name" tick={{ fontSize: 9, fill: "var(--muted-foreground)" }} />
+                    <YAxis domain={[0, 100]} tick={{ fontSize: 9, fill: "var(--muted-foreground)" }} width={34} />
+                    <Tooltip content={<ChartTooltip />} />
+                    <Bar dataKey="accuracy" radius={[2, 2, 0, 0]}>
+                      {accuracyBuckets.map((b) => (
+                        <Cell
+                          key={b.name}
+                          fill={b.name === "UP" ? "var(--bull)" : b.name === "DOWN" ? "var(--bear)" : "var(--neutral)"}
+                        />
+                      ))}
+                    </Bar>
+                  </ComposedChart>
+                </ResponsiveContainer>
+              </div>
+            </Panel>
+
+            {/* Paper Performance Summary */}
+            <Panel title="Paper Trading Metrics" bodyClassName="p-3">
+              <div className="grid grid-cols-3 gap-2">
+                <KpiCard label="Account Balance" value={`$${formatPrice(account.balance, 2)}`} compact />
+                <KpiCard
+                  label="Simulation Return"
+                  value={`${metrics.avgReturn >= 0 ? "+" : ""}${(metrics.avgReturn * 100 * metrics.tradesCount).toFixed(2)}%`}
+                  tone={metrics.avgReturn >= 0 ? "bull" : "bear"}
+                  compact
+                />
+                <KpiCard label="Backtest Win rate" value={`${(metrics.winRate * 100).toFixed(1)}%`} compact />
+                <KpiCard label="Backtest Signals" value={`${metrics.tradesCount}`} compact />
+                <KpiCard label="Simulated Drawdown" value={`${(metrics.maxDrawdown * 100).toFixed(2)}%`} tone="bear" compact />
+                <KpiCard
+                  label="Profit Factor"
+                  value={metrics.profitFactor.toFixed(2)}
+                  tone={metrics.profitFactor >= 1.0 ? "bull" : "bear"}
+                  compact
+                />
+              </div>
+              <p className="label-xs mt-3 mb-1">Equity Curve</p>
+              <div className="h-[90px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={equityData} margin={{ top: 4, right: 4, bottom: 0, left: -12 }}>
+                    <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false} />
+                    <XAxis dataKey="label" tick={{ fontSize: 9, fill: "var(--muted-foreground)" }} minTickGap={30} />
+                    <YAxis domain={["auto", "auto"]} tick={{ fontSize: 9, fill: "var(--muted-foreground)" }} width={48} />
+                    <Tooltip content={<ChartTooltip />} />
+                    <Area
+                      type="monotone"
+                      dataKey="equity"
+                      stroke="var(--primary)"
+                      fill="var(--primary)"
+                      fillOpacity={0.12}
+                      strokeWidth={1.4}
+                    />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+            </Panel>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+            {/* Baselines Panel */}
+            <Panel title="Model Benchmarks vs Baselines" bodyClassName="p-3 flex flex-col justify-between">
+              <div className="space-y-2">
+                <p className="text-[10px] text-muted-foreground">
+                  Comparison of ML walk-forward ensembling against heuristic default baselines over identical ranges.
+                </p>
+                <div className="space-y-1.5">
+                  {baselineData.map((b) => {
+                    const diff = b.accuracy - baselineData[4]!.accuracy; // Diff from random baseline
+                    return (
+                      <div key={b.name} className="flex items-center justify-between text-xs">
+                        <span className={b.name === "ML Ensemble" ? "font-bold text-foreground" : "text-muted-foreground"}>
+                          {b.name}
+                        </span>
+                        <div className="flex items-center gap-2 num">
+                          <span className={b.name === "ML Ensemble" ? "font-bold text-primary" : "text-foreground"}>
+                            {b.accuracy}%
+                          </span>
+                          {b.name !== "Random" && (
+                            <span className={diff >= 0 ? "text-bull text-[10px]" : "text-bear text-[10px]"}>
+                              {diff >= 0 ? "+" : ""}{diff.toFixed(1)}%
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="mt-3 h-[110px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={baselineData} margin={{ top: 5, right: 5, left: -25, bottom: 5 }}>
+                    <CartesianGrid stroke="rgba(255,255,255,0.03)" vertical={false} />
+                    <XAxis dataKey="name" tick={{ fontSize: 8, fill: "var(--muted-foreground)" }} />
+                    <YAxis domain={[0, 100]} tick={{ fontSize: 8, fill: "var(--muted-foreground)" }} />
+                    <Tooltip content={<ChartTooltip />} />
+                    <Bar dataKey="accuracy" fill="var(--muted)" radius={[1, 1, 0, 0]}>
+                      {baselineData.map((b, i) => (
+                        <Cell key={i} fill={b.name === "ML Ensemble" ? "var(--primary)" : "var(--muted-foreground)"} fillOpacity={0.6} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </Panel>
+
+            {/* Confidence Calibration Panel */}
+            <Panel title="Confidence Calibration" bodyClassName="p-3">
+              <p className="text-[10px] text-muted-foreground mb-2">
+                Verifying if higher model confidence scores map to higher actual historical hits.
+              </p>
+              <div className="overflow-x-auto max-h-[160px]">
+                <table className="w-full num text-[10px]">
+                  <thead>
+                    <tr className="border-b border-panel-border text-muted-foreground text-left">
+                      <th className="py-1">Confidence Bucket</th>
+                      <th className="py-1 text-right">Predictions</th>
+                      <th className="py-1 text-right">Accuracy</th>
+                      <th className="py-1 text-right">Calibration Gap</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {deepStats.confidenceBuckets.map((b) => {
+                      const mid = b.avgConfidence * 100;
+                      const acc = b.accuracy * 100;
+                      const gap = acc - mid;
+                      return (
+                        <tr key={b.range} className="border-b border-panel-border/30 hover:bg-accent/20">
+                          <td className="py-1">{b.range}</td>
+                          <td className="py-1 text-right text-muted-foreground">{b.count}</td>
+                          <td className={cn("py-1 text-right font-bold", acc > 50 ? "text-bull" : "text-bear")}>
+                            {acc.toFixed(1)}%
+                          </td>
+                          <td className={cn("py-1 text-right", gap >= 0 ? "text-bull" : "text-bear")}>
+                            {gap >= 0 ? "+" : ""}{gap.toFixed(1)}%
+                          </td>
+                        </tr>
                       );
                     })}
-                    <td className="py-1.5 text-right text-foreground font-semibold">
-                      {(metrics.precision[pred] * 100).toFixed(1)}%
-                    </td>
-                    <td className="py-1.5 text-right text-foreground">
-                      {(metrics.recall[pred] * 100).toFixed(1)}%
-                    </td>
-                    <td className="py-1.5 text-right text-primary">
-                      {metrics.f1[pred].toFixed(2)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <div className="mt-3 h-[100px]">
-            <ResponsiveContainer width="100%" height="100%">
-              <ComposedChart data={accuracyBuckets} margin={{ top: 4, right: 4, bottom: 0, left: -20 }}>
-                <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false} />
-                <XAxis dataKey="name" tick={{ fontSize: 9, fill: "var(--muted-foreground)" }} />
-                <YAxis domain={[0, 100]} tick={{ fontSize: 9, fill: "var(--muted-foreground)" }} width={34} />
-                <Tooltip content={<ChartTooltip />} />
-                <Bar dataKey="accuracy" radius={[2, 2, 0, 0]}>
-                  {accuracyBuckets.map((b) => (
-                    <Cell
-                      key={b.name}
-                      fill={b.name === "UP" ? "var(--bull)" : b.name === "DOWN" ? "var(--bear)" : "var(--neutral)"}
-                    />
-                  ))}
-                </Bar>
-              </ComposedChart>
-            </ResponsiveContainer>
-          </div>
-        </Panel>
+                  </tbody>
+                </table>
+              </div>
+            </Panel>
 
-        {/* Paper Performance Summary */}
-        <Panel title="Paper Trading Metrics" bodyClassName="p-3">
-          <div className="grid grid-cols-3 gap-2">
-            <KpiCard label="Account Balance" value={`$${formatPrice(account.balance, 2)}`} compact />
-            <KpiCard
-              label="Simulation Return"
-              value={`${metrics.avgReturn >= 0 ? "+" : ""}${(metrics.avgReturn * 100 * metrics.tradesCount).toFixed(2)}%`}
-              tone={metrics.avgReturn >= 0 ? "bull" : "bear"}
-              compact
-            />
-            <KpiCard label="Backtest Win rate" value={`${(metrics.winRate * 100).toFixed(1)}%`} compact />
-            <KpiCard label="Backtest Signals" value={`${metrics.tradesCount}`} compact />
-            <KpiCard label="Simulated Drawdown" value={`${(metrics.maxDrawdown * 100).toFixed(2)}%`} tone="bear" compact />
-            <KpiCard
-              label="Profit Factor"
-              value={metrics.profitFactor.toFixed(2)}
-              tone={metrics.profitFactor >= 1.0 ? "bull" : "bear"}
-              compact
-            />
+            {/* Regime Performance Panel */}
+            <Panel title="Performance by Market Regime" bodyClassName="p-3">
+              <p className="text-[10px] text-muted-foreground mb-2">
+                Accuracy breakdown by structural price and volatility regimes.
+              </p>
+              <div className="overflow-x-auto max-h-[160px]">
+                <table className="w-full num text-[10px]">
+                  <thead>
+                    <tr className="border-b border-panel-border text-muted-foreground text-left">
+                      <th className="py-1">Market Regime / Volatility</th>
+                      <th className="py-1 text-right">Samples</th>
+                      <th className="py-1 text-right">Accuracy</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {Object.keys(deepStats.regimePerformance).map((reg) => {
+                      const r = deepStats.regimePerformance[reg]!;
+                      return (
+                        <tr key={reg} className="border-b border-panel-border/30 hover:bg-accent/20">
+                          <td className="py-1 font-medium">{reg.replace("_", " ")}</td>
+                          <td className="py-1 text-right text-muted-foreground">{r.count}</td>
+                          <td className="py-1 text-right font-bold text-foreground">
+                            {(r.accuracy * 100).toFixed(1)}%
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {Object.keys(deepStats.volatilityPerformance).map((vol) => {
+                      const v = deepStats.volatilityPerformance[vol]!;
+                      return (
+                        <tr key={vol} className="border-b border-panel-border/30 hover:bg-accent/20">
+                          <td className="py-1 text-primary">{vol} VOLATILITY</td>
+                          <td className="py-1 text-right text-muted-foreground">{v.count}</td>
+                          <td className="py-1 text-right font-bold text-primary">
+                            {(v.accuracy * 100).toFixed(1)}%
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </Panel>
           </div>
-          <p className="label-xs mt-3 mb-1">Equity Curve</p>
-          <div className="h-[90px]">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={equityData} margin={{ top: 4, right: 4, bottom: 0, left: -12 }}>
-                <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false} />
-                <XAxis dataKey="label" tick={{ fontSize: 9, fill: "var(--muted-foreground)" }} minTickGap={30} />
-                <YAxis domain={["auto", "auto"]} tick={{ fontSize: 9, fill: "var(--muted-foreground)" }} width={48} />
-                <Tooltip content={<ChartTooltip />} />
-                <Area
-                  type="monotone"
-                  dataKey="equity"
-                  stroke="var(--primary)"
-                  fill="var(--primary)"
-                  fillOpacity={0.12}
-                  strokeWidth={1.4}
-                />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-        </Panel>
-      </div>
 
-      <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
-        {/* Baselines Panel */}
-        <Panel title="Model Benchmarks vs Baselines" bodyClassName="p-3 flex flex-col justify-between">
-          <div className="space-y-2">
-            <p className="text-[10px] text-muted-foreground">
-              Comparison of ML walk-forward ensembling against heuristic default baselines over identical ranges.
-            </p>
-            <div className="space-y-1.5">
-              {baselineData.map((b) => {
-                const diff = b.accuracy - baselineData[4]!.accuracy; // Diff from random baseline
-                return (
-                  <div key={b.name} className="flex items-center justify-between text-xs">
-                    <span className={b.name === "ML Ensemble" ? "font-bold text-foreground" : "text-muted-foreground"}>
-                      {b.name}
-                    </span>
-                    <div className="flex items-center gap-2 num">
-                      <span className={b.name === "ML Ensemble" ? "font-bold text-primary" : "text-foreground"}>
-                        {b.accuracy}%
+          <div className="grid gap-3 md:grid-cols-2">
+            {/* Streak Performance & Common Failures */}
+            <Panel title="Model Streaks & Failure Diagnostics" bodyClassName="p-3">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <p className="label-xs mb-1.5 text-muted-foreground">Streak accuracy (accuracy following directional prediction)</p>
+                  <div className="space-y-1 text-[11px] num">
+                    <div className="flex justify-between">
+                      <span>After UP prediction:</span>
+                      <span className="font-bold text-bull">
+                        {(deepStats.consecutiveUpPerformance.accuracy * 100).toFixed(1)}% (N={deepStats.consecutiveUpPerformance.count})
                       </span>
-                      {b.name !== "Random" && (
-                        <span className={diff >= 0 ? "text-bull text-[10px]" : "text-bear text-[10px]"}>
-                          {diff >= 0 ? "+" : ""}{diff.toFixed(1)}%
-                        </span>
-                      )}
+                    </div>
+                    <div className="flex justify-between">
+                      <span>After DOWN prediction:</span>
+                      <span className="font-bold text-bear">
+                        {(deepStats.consecutiveDownPerformance.accuracy * 100).toFixed(1)}% (N={deepStats.consecutiveDownPerformance.count})
+                      </span>
                     </div>
                   </div>
-                );
-              })}
-            </div>
+                </div>
+                <div>
+                  <p className="label-xs mb-1.5 text-muted-foreground flex items-center gap-1">
+                    <AlertTriangle className="size-3 text-bear" /> Common Failure Patterns (Confidence &ge; 70%)
+                  </p>
+                  <div className="space-y-1 text-[10px] num text-muted-foreground">
+                    <div className="flex justify-between">
+                      <span>High-Conf UP &rarr; Actual DOWN:</span>
+                      <span className="font-semibold text-bear">{deepStats.failurePatterns.highConfUp_actualDown}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>High-Conf UP &rarr; Actual SIDEWAYS:</span>
+                      <span className="font-semibold text-foreground">{deepStats.failurePatterns.highConfUp_actualSideways}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>High-Conf DOWN &rarr; Actual UP:</span>
+                      <span className="font-semibold text-bull">{deepStats.failurePatterns.highConfDown_actualUp}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>High-Conf DOWN &rarr; Actual SIDEWAYS:</span>
+                      <span className="font-semibold text-foreground">{deepStats.failurePatterns.highConfDown_actualSideways}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </Panel>
+
+            <Disclaimer />
           </div>
-          <div className="mt-3 h-[110px]">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={baselineData} margin={{ top: 5, right: 5, left: -25, bottom: 5 }}>
-                <CartesianGrid stroke="rgba(255,255,255,0.03)" vertical={false} />
-                <XAxis dataKey="name" tick={{ fontSize: 8, fill: "var(--muted-foreground)" }} />
-                <YAxis domain={[0, 100]} tick={{ fontSize: 8, fill: "var(--muted-foreground)" }} />
-                <Tooltip content={<ChartTooltip />} />
-                <Bar dataKey="accuracy" fill="var(--muted)" radius={[1, 1, 0, 0]}>
-                  {baselineData.map((b, i) => (
-                    <Cell key={i} fill={b.name === "ML Ensemble" ? "var(--primary)" : "var(--muted-foreground)"} fillOpacity={0.6} />
+
+          {/* Scored Predictions Table */}
+          <Panel
+            title={`Walk-Forward Logs — ${asset} ${tf}`}
+            action={<Badge variant="outline" className="border-panel-border text-[10px]">{evaluated.length} scored</Badge>}
+            bodyClassName="p-0"
+          >
+            <div className="max-h-[350px] overflow-auto">
+              <table className="w-full num text-[11px]">
+                <thead className="sticky top-0 bg-panel border-b border-panel-border">
+                  <tr>
+                    {["Time", "Price", "Predicted", "UP", "DOWN", "SIDE", "Conf", "Signal", "Regime", "Actual", "Outcome"].map((h) => (
+                      <th key={h} className="label-xs px-3 py-1.5 text-right first:text-left">
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {evaluated.map((p) => (
+                    <tr key={p.id} className="border-b border-panel-border/60 hover:bg-accent/40">
+                      <td className="px-3 py-1.5 text-muted-foreground">
+                        {new Date(p.timestamp * 1000).toLocaleString("en-US", {
+                          month: "short",
+                          day: "numeric",
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
+                      </td>
+                      <td className="px-3 py-1.5 text-right">{formatPrice(p.currentPrice, 2)}</td>
+                      <td className={cn("px-3 py-1.5 text-right font-semibold", toneClass(p.direction))}>
+                        {p.direction}
+                      </td>
+                      <td className="px-3 py-1.5 text-right text-muted-foreground">{(p.upProbability * 100).toFixed(1)}</td>
+                      <td className="px-3 py-1.5 text-right text-muted-foreground">{(p.downProbability * 100).toFixed(1)}</td>
+                      <td className="px-3 py-1.5 text-right text-muted-foreground">
+                        {(p.sidewaysProbability * 100).toFixed(1)}
+                      </td>
+                      <td className="px-3 py-1.5 text-right">{(p.confidence * 100).toFixed(0)}%</td>
+                      <td className="px-3 py-1.5 text-right">
+                        <span className={p.signal === "TRADE" ? "text-bull font-bold" : "text-muted-foreground"}>
+                          {p.signal}
+                        </span>
+                      </td>
+                      <td className="px-3 py-1.5 text-right text-muted-foreground text-[10px] truncate max-w-[80px]">
+                        {p.regime}
+                      </td>
+                      <td className={cn("px-3 py-1.5 text-right", toneClass(p.actualDirection))}>
+                        {p.actualDirection ?? "—"}
+                      </td>
+                      <td className="px-3 py-1.5 text-right">
+                        <span className={p.correct ? "text-bull" : "text-bear font-semibold"}>{p.correct ? "HIT" : "MISS"}</span>
+                      </td>
+                    </tr>
                   ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </Panel>
-
-        {/* Confidence Calibration Panel */}
-        <Panel title="Confidence Calibration" bodyClassName="p-3">
-          <p className="text-[10px] text-muted-foreground mb-2">
-            Verifying if higher model confidence scores map to higher actual historical hits.
-          </p>
-          <div className="overflow-x-auto max-h-[160px]">
-            <table className="w-full num text-[10px]">
-              <thead>
-                <tr className="border-b border-panel-border text-muted-foreground text-left">
-                  <th className="py-1">Confidence Bucket</th>
-                  <th className="py-1 text-right">Predictions</th>
-                  <th className="py-1 text-right">Accuracy</th>
-                  <th className="py-1 text-right">Calibration Gap</th>
-                </tr>
-              </thead>
-              <tbody>
-                {deepStats.confidenceBuckets.map((b) => {
-                  const mid = b.avgConfidence * 100;
-                  const acc = b.accuracy * 100;
-                  const gap = acc - mid;
-                  return (
-                    <tr key={b.range} className="border-b border-panel-border/30 hover:bg-accent/20">
-                      <td className="py-1">{b.range}</td>
-                      <td className="py-1 text-right text-muted-foreground">{b.count}</td>
-                      <td className={cn("py-1 text-right font-bold", acc > 50 ? "text-bull" : "text-bear")}>
-                        {acc.toFixed(1)}%
-                      </td>
-                      <td className={cn("py-1 text-right", gap >= 0 ? "text-bull" : "text-bear")}>
-                        {gap >= 0 ? "+" : ""}{gap.toFixed(1)}%
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </Panel>
-
-        {/* Regime Performance Panel */}
-        <Panel title="Performance by Market Regime" bodyClassName="p-3">
-          <p className="text-[10px] text-muted-foreground mb-2">
-            Accuracy breakdown by structural price and volatility regimes.
-          </p>
-          <div className="overflow-x-auto max-h-[160px]">
-            <table className="w-full num text-[10px]">
-              <thead>
-                <tr className="border-b border-panel-border text-muted-foreground text-left">
-                  <th className="py-1">Market Regime / Volatility</th>
-                  <th className="py-1 text-right">Samples</th>
-                  <th className="py-1 text-right">Accuracy</th>
-                </tr>
-              </thead>
-              <tbody>
-                {Object.keys(deepStats.regimePerformance).map((reg) => {
-                  const r = deepStats.regimePerformance[reg]!;
-                  return (
-                    <tr key={reg} className="border-b border-panel-border/30 hover:bg-accent/20">
-                      <td className="py-1 font-medium">{reg.replace("_", " ")}</td>
-                      <td className="py-1 text-right text-muted-foreground">{r.count}</td>
-                      <td className="py-1 text-right font-bold text-foreground">
-                        {(r.accuracy * 100).toFixed(1)}%
-                      </td>
-                    </tr>
-                  );
-                })}
-                {Object.keys(deepStats.volatilityPerformance).map((vol) => {
-                  const v = deepStats.volatilityPerformance[vol]!;
-                  return (
-                    <tr key={vol} className="border-b border-panel-border/30 hover:bg-accent/20">
-                      <td className="py-1 text-primary">{vol} VOLATILITY</td>
-                      <td className="py-1 text-right text-muted-foreground">{v.count}</td>
-                      <td className="py-1 text-right font-bold text-primary">
-                        {(v.accuracy * 100).toFixed(1)}%
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </Panel>
-      </div>
-
-      <div className="grid gap-3 md:grid-cols-2">
-        {/* Streak Performance & Common Failures */}
-        <Panel title="Model Streaks & Failure Diagnostics" bodyClassName="p-3">
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <p className="label-xs mb-1.5 text-muted-foreground">Streak accuracy (accuracy following directional prediction)</p>
-              <div className="space-y-1 text-[11px] num">
-                <div className="flex justify-between">
-                  <span>After UP prediction:</span>
-                  <span className="font-bold text-bull">
-                    {(deepStats.consecutiveUpPerformance.accuracy * 100).toFixed(1)}% (N={deepStats.consecutiveUpPerformance.count})
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span>After DOWN prediction:</span>
-                  <span className="font-bold text-bear">
-                    {(deepStats.consecutiveDownPerformance.accuracy * 100).toFixed(1)}% (N={deepStats.consecutiveDownPerformance.count})
-                  </span>
-                </div>
-              </div>
+                </tbody>
+              </table>
             </div>
-            <div>
-              <p className="label-xs mb-1.5 text-muted-foreground flex items-center gap-1">
-                <AlertTriangle className="size-3 text-bear" /> Common Failure Patterns (Confidence &ge; 70%)
-              </p>
-              <div className="space-y-1 text-[10px] num text-muted-foreground">
-                <div className="flex justify-between">
-                  <span>High-Conf UP &rarr; Actual DOWN:</span>
-                  <span className="font-semibold text-bear">{deepStats.failurePatterns.highConfUp_actualDown}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>High-Conf UP &rarr; Actual SIDEWAYS:</span>
-                  <span className="font-semibold text-foreground">{deepStats.failurePatterns.highConfUp_actualSideways}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>High-Conf DOWN &rarr; Actual UP:</span>
-                  <span className="font-semibold text-bull">{deepStats.failurePatterns.highConfDown_actualUp}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>High-Conf DOWN &rarr; Actual SIDEWAYS:</span>
-                  <span className="font-semibold text-foreground">{deepStats.failurePatterns.highConfDown_actualSideways}</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </Panel>
-
-        <Disclaimer />
-      </div>
-
-      {/* Scored Predictions Table */}
-      <Panel
-        title={`Walk-Forward Logs — ${asset} ${tf}`}
-        action={<Badge variant="outline" className="border-panel-border text-[10px]">{evaluated.length} scored</Badge>}
-        bodyClassName="p-0"
-      >
-        <div className="max-h-[350px] overflow-auto">
-          <table className="w-full num text-[11px]">
-            <thead className="sticky top-0 bg-panel border-b border-panel-border">
-              <tr>
-                {["Time", "Price", "Predicted", "UP", "DOWN", "SIDE", "Conf", "Signal", "Regime", "Actual", "Outcome"].map((h) => (
-                  <th key={h} className="label-xs px-3 py-1.5 text-right first:text-left">
-                    {h}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {evaluated.map((p) => (
-                <tr key={p.id} className="border-b border-panel-border/60 hover:bg-accent/40">
-                  <td className="px-3 py-1.5 text-muted-foreground">
-                    {new Date(p.timestamp * 1000).toLocaleString("en-US", {
-                      month: "short",
-                      day: "numeric",
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}
-                  </td>
-                  <td className="px-3 py-1.5 text-right">{formatPrice(p.currentPrice, 2)}</td>
-                  <td className={cn("px-3 py-1.5 text-right font-semibold", toneClass(p.direction))}>
-                    {p.direction}
-                  </td>
-                  <td className="px-3 py-1.5 text-right text-muted-foreground">{(p.upProbability * 100).toFixed(1)}</td>
-                  <td className="px-3 py-1.5 text-right text-muted-foreground">{(p.downProbability * 100).toFixed(1)}</td>
-                  <td className="px-3 py-1.5 text-right text-muted-foreground">
-                    {(p.sidewaysProbability * 100).toFixed(1)}
-                  </td>
-                  <td className="px-3 py-1.5 text-right">{(p.confidence * 100).toFixed(0)}%</td>
-                  <td className="px-3 py-1.5 text-right">
-                    <span className={p.signal === "TRADE" ? "text-bull font-bold" : "text-muted-foreground"}>
-                      {p.signal}
-                    </span>
-                  </td>
-                  <td className="px-3 py-1.5 text-right text-muted-foreground text-[10px] truncate max-w-[80px]">
-                    {p.regime}
-                  </td>
-                  <td className={cn("px-3 py-1.5 text-right", toneClass(p.actualDirection))}>
-                    {p.actualDirection ?? "—"}
-                  </td>
-                  <td className="px-3 py-1.5 text-right">
-                    <span className={p.correct ? "text-bull" : "text-bear font-semibold"}>{p.correct ? "HIT" : "MISS"}</span>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </Panel>
-      </>)}
+          </Panel>
+        </>)}
     </div>
   );
 }

@@ -36,17 +36,17 @@ export function evaluateHistory(
 
   for (let i = start; i <= end; i++) {
     const window = candles.slice(0, i + 1);
-    
+
     // Calculate target using volatility-adjusted threshold
     const volPct = realizedVolatility(window, 20); // realized vol in percent
     const threshold = (k * volPct) / 100; // in fractional terms
-    
+
     const currentClose = window[window.length - 1]!.close;
     const next = candles[i + 1]!;
-    
+
     // Generate prediction using only the window and the pre-trained ensemble parameters (O(1) inference)
     const prediction = predictWithEnsemble(ensemble, window, asset, timeframe, k);
-    
+
     const actualDirection = classifyMove(currentClose, next.close, threshold);
     const actualMove = (next.close - currentClose) / currentClose;
 
@@ -65,24 +65,24 @@ export interface ExtendedBacktestMetrics {
   correct: number;
   incorrect: number;
   accuracy: number;
-  
+
   // Class-specific scores
   upAccuracy: number;
   downAccuracy: number;
   sidewaysAccuracy: number;
-  
+
   precision: Record<Direction, number>;
   recall: Record<Direction, number>;
   f1: Record<Direction, number>;
-  
+
   avgProbability: number;
   avgConfidence: number;
   matrix: Record<Direction, Record<Direction, number>>;
-  
+
   // Calibration
   brierScore: number;
   logLoss: number;
-  
+
   // Trading performance (based on TRADE signals)
   tradesCount: number;
   noSignalsCount: number;
@@ -90,7 +90,7 @@ export interface ExtendedBacktestMetrics {
   avgReturn: number;
   profitFactor: number;
   maxDrawdown: number;
-  
+
   // Baselines accuracy
   baselineMajorityAccuracy: number;
   baselinePrevDirAccuracy: number;
@@ -211,7 +211,7 @@ export function computeAccuracy(predictions: EvaluatedPrediction[]): ExtendedBac
     tradesCount++;
     const pred = p.direction;
     const move = p.actualMove ?? 0;
-    
+
     // Simulate trade payout
     let tradeReturn = 0;
     if (pred === "UP") {
@@ -257,25 +257,25 @@ export function computeAccuracy(predictions: EvaluatedPrediction[]): ExtendedBac
     upAccuracy: perClass("UP"),
     downAccuracy: perClass("DOWN"),
     sidewaysAccuracy: perClass("SIDEWAYS"),
-    
+
     precision: stats.precision,
     recall: stats.recall,
     f1: stats.f1,
-    
+
     avgProbability: total ? probSum / total : 0,
     avgConfidence: total ? confSum / total : 0,
     matrix,
-    
+
     brierScore: stats.brierScore,
     logLoss: stats.logLoss,
-    
+
     tradesCount,
     noSignalsCount,
     winRate,
     avgReturn,
     profitFactor,
     maxDrawdown,
-    
+
     baselineMajorityAccuracy: total ? baselineMajorityCorrect / total : 0,
     baselinePrevDirAccuracy: total ? baselinePrevDirCorrect / total : 0,
     baselineRandomAccuracy: total ? baselineRandomCorrect / total : 0,

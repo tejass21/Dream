@@ -26,13 +26,13 @@ export function PredictionPanel() {
       // using history up to candles.length - 2 (which has last index candles.length - 3)
       const history = candles.slice(0, candles.length - 2);
       const pred = computePrediction(history, symbol, timeframe);
-      
+
       const prevClose = candles[candles.length - 3]!.close;
       const targetCandle = candles[candles.length - 2]!;
-      
+
       const vol = realizedVolatility(history, 20);
       const threshold = (0.5 * vol) / 100;
-      
+
       const actualDir = classifyMove(prevClose, targetCandle.close, threshold);
       const actualMove = (targetCandle.close - prevClose) / prevClose;
       const correct = pred.direction === actualDir;
