@@ -1,5 +1,7 @@
 import type { Candle, Timeframe } from "../market/types";
-import type { Direction } from "./types";
+
+/** Named numeric feature vector used by the prediction models. */
+export type FeatureSet = Record<string, number>;
 
 // ==========================================
 // 1. Feature Engineering & Multi-Timeframe
