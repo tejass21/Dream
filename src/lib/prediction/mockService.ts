@@ -23,6 +23,7 @@ import {
   Scaler,
 } from "./ml";
 import { classifyMove } from "./backtest";
+import { realizedVolatility } from "../market/indicators";
 
 // Model feature partitions
 const PRICE_KEYS = ["ret1", "ret2", "ret3", "ret5", "ret8", "bodyPct", "upperWickPct", "lowerWickPct", "closeLocation", "distRollingHigh40", "distRollingLow40"];
