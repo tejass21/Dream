@@ -26,12 +26,18 @@ import { classifyMove } from "./backtest";
 import { realizedVolatility } from "../market/indicators";
 
 // Model feature partitions
-const PRICE_KEYS = ["ret1", "ret2", "ret3", "ret5", "ret8", "bodyPct", "upperWickPct", "lowerWickPct", "closeLocation", "distRollingHigh40", "distRollingLow40"];
-const VOLUME_KEYS = [...PRICE_KEYS, "relVolume", "volChange", "priceVolumeInt"];
-const MTF_KEYS = ["ret1", "mom6", "closeLocation", "distSupport", "distResistance"];
-const REGIME_KEYS = ["consecutiveDir", "hour", "dayOfWeek", "distSupport", "distResistance"];
+const PRICE_KEYS = ["ret1", "ret2", "ret3", "ret5", "ret8", "bodyPct", "upperWickPct", "lowerWickPct", "closeLocation", "distRollingHigh40", "distRollingLow40", "ret1Atr", "ret5Atr", "rangeAtr", "zScore50", "emaFast", "emaSpread"];
+const VOLUME_KEYS = [...PRICE_KEYS, "relVolume", "volChange", "priceVolumeInt", "volZ", "flowImbalance"];
+const MTF_KEYS = ["ret1", "mom6", "closeLocation", "distSupport", "distResistance", "htfRet1", "htfRet5", "htfCloseLocation", "emaTrend"];
+const REGIME_KEYS = ["consecutiveDir", "hour", "dayOfWeek", "distSupport", "distResistance", "atrPct", "volRatio", "volShort", "rsi14", "autocorr1"];
+
+/** The boosted-tree model sees the full feature space. */
+const GBM_KEYS = Array.from(
+  new Set([...PRICE_KEYS, ...VOLUME_KEYS, ...MTF_KEYS, ...REGIME_KEYS, "ret13", "minuteOfHour"]),
+);
 
 const ALL_KEYS = Array.from(new Set([...PRICE_KEYS, ...VOLUME_KEYS, ...MTF_KEYS, ...REGIME_KEYS]));
+
 
 /** Detects the current market regime based on structural rules and indicators */
 export function detectRegime(candles: Candle[]): string {
