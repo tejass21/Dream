@@ -113,9 +113,119 @@ export function extractFeatures(candles: Candle[], timeframe: Timeframe): Featur
   const date = new Date(last.time * 1000);
   features["hour"] = date.getUTCHours() / 24;
   features["dayOfWeek"] = date.getUTCDay() / 7;
+  features["minuteOfHour"] = date.getUTCMinutes() / 60;
+
+  // --- Category E: Volatility normalisation (risk-adjusted returns) ---
+  // True range based ATR gives us a scale-free unit for every price move,
+  // which is what makes features comparable across regimes and assets.
+  let trSum = 0;
+  for (let i = n - 14; i < n; i++) {
+    const c = candles[i]!;
+    const prevClose = candles[i - 1]?.close ?? c.open;
+    trSum += Math.max(c.high - c.low, Math.abs(c.high - prevClose), Math.abs(c.low - prevClose));
+  }
+  const atr14 = trSum / 14 || price * 0.001;
+  features["atrPct"] = atr14 / price;
+  features["ret1Atr"] = ((price - candles[n - 2]!.close) / atr14) * 0.5;
+  features["ret5Atr"] = ((price - candles[n - 6]!.close) / atr14) * 0.25;
+  features["rangeAtr"] = hlRange / atr14;
+
+  // short vs long realised volatility -> volatility regime / expansion
+  const logRets: number[] = [];
+  for (let i = Math.max(1, n - 51); i < n; i++) {
+    logRets.push(Math.log(candles[i]!.close / candles[i - 1]!.close));
+  }
+  const stdOf = (arr: number[]) => {
+    if (arr.length < 2) return 0;
+    const m = arr.reduce((a, b) => a + b, 0) / arr.length;
+    return Math.sqrt(arr.reduce((a, b) => a + (b - m) ** 2, 0) / (arr.length - 1));
+  };
+  const volShort = stdOf(logRets.slice(-10));
+  const volLong = stdOf(logRets.slice(-40)) || 1e-9;
+  features["volRatio"] = volShort / volLong;
+  features["volShort"] = volShort * 100;
+
+  // --- Category F: Trend structure (EMA slopes, z-score mean reversion) ---
+  const ema = (period: number) => {
+    const alpha = 2 / (period + 1);
+    let e = candles[Math.max(0, n - period * 3)]!.close;
+    for (let i = Math.max(0, n - period * 3) + 1; i < n; i++) {
+      e = candles[i]!.close * alpha + e * (1 - alpha);
+    }
+    return e;
+  };
+  const ema9 = ema(9);
+  const ema21 = ema(21);
+  const ema50 = ema(50);
+  features["emaFast"] = (price - ema9) / atr14;
+  features["emaSpread"] = (ema9 - ema21) / atr14;
+  features["emaTrend"] = (ema21 - ema50) / atr14;
+
+  const closes50 = candles.slice(-50).map((c) => c.close);
+  const mean50 = closes50.reduce((a, b) => a + b, 0) / closes50.length;
+  const sd50 =
+    Math.sqrt(closes50.reduce((a, b) => a + (b - mean50) ** 2, 0) / (closes50.length - 1)) || 1e-9;
+  features["zScore50"] = (price - mean50) / sd50;
+
+  // Wilder RSI (14) — normalised to [-1, 1]
+  let gains = 0;
+  let losses = 0;
+  for (let i = n - 14; i < n; i++) {
+    const diff = candles[i]!.close - candles[i - 1]!.close;
+    if (diff >= 0) gains += diff;
+    else losses -= diff;
+  }
+  const rs = losses === 0 ? 100 : gains / losses;
+  features["rsi14"] = (100 - 100 / (1 + rs)) / 50 - 1;
+
+  // return autocorrelation: tells the model whether to trend-follow or mean-revert
+  const acRets = logRets.slice(-30);
+  if (acRets.length > 6) {
+    const m = acRets.reduce((a, b) => a + b, 0) / acRets.length;
+    let num = 0;
+    let den = 0;
+    for (let i = 1; i < acRets.length; i++) {
+      num += (acRets[i]! - m) * (acRets[i - 1]! - m);
+    }
+    for (const r of acRets) den += (r - m) ** 2;
+    features["autocorr1"] = den > 0 ? num / den : 0;
+  } else {
+    features["autocorr1"] = 0;
+  }
+
+  // --- Category G: Multi-timeframe alignment (no look-ahead: aggregates only closed bars) ---
+  const htf = aggregateCandles(candles, timeframeSeconds(timeframe) * 5);
+  if (htf.length >= 6) {
+    const h = htf[htf.length - 1]!;
+    const hPrev = htf[htf.length - 2]!;
+    const h5 = htf[htf.length - 6]!;
+    features["htfRet1"] = (h.close - hPrev.close) / (hPrev.close || 1);
+    features["htfRet5"] = (h.close - h5.close) / (h5.close || 1);
+    const hRange = h.high - h.low;
+    features["htfCloseLocation"] = hRange > 0 ? (h.close - h.low) / hRange : 0.5;
+  } else {
+    features["htfRet1"] = 0;
+    features["htfRet5"] = 0;
+    features["htfCloseLocation"] = 0.5;
+  }
+
+  // --- Category H: Volume microstructure proxies ---
+  const volAvg50 = candles.slice(-50).reduce((a, c) => a + c.volume, 0) / 50 || 1;
+  features["volZ"] = (last.volume - volAvg50) / volAvg50;
+  let signedVol = 0;
+  let absVol = 0;
+  for (let i = n - 10; i < n; i++) {
+    const c = candles[i]!;
+    const dir = c.close >= c.open ? 1 : -1;
+    signedVol += dir * c.volume;
+    absVol += c.volume;
+  }
+  // order-flow imbalance proxy (buy vs sell pressure over last 10 bars)
+  features["flowImbalance"] = absVol > 0 ? signedVol / absVol : 0;
 
   return features;
 }
+
 
 // ==========================================
 // 2. Chronological Standardization Scaler
