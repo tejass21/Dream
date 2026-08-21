@@ -152,9 +152,49 @@ export interface TrainedEnsemble {
   tempC: number;
   modelD: SoftmaxRegression;
   tempD: number;
+  gbm: GradientBoostingClassifier;
+  tempGbm: number;
+  /** blend weights for [A, B, C, D, GBM], fitted on the validation slice */
+  weights: number[];
   ridgeReg: RidgeRegression;
   meanUpMove: number;
   meanDownMove: number;
+  /** validation diagnostics — the honest, out-of-sample numbers */
+  validation: {
+    samples: number;
+    accuracy: number;
+    logLoss: number;
+    brier: number;
+    /** accuracy on the top-confidence third of validation samples */
+    highConfidenceAccuracy: number;
+    highConfidenceShare: number;
+    /** decision threshold on |p(up) - p(down)| that maximised validation edge */
+    edgeThreshold: number;
+  };
+  trainingSamples: number;
+  featureImportance: { key: string; weight: number }[];
+}
+
+/** Sliding window big enough for every feature (50-bar stats + 5x HTF aggregation). */
+const FEATURE_WINDOW = 320;
+
+function logLossOf(probs: number[][], y: number[]): number {
+  if (probs.length === 0) return 0;
+  let loss = 0;
+  for (let i = 0; i < probs.length; i++) loss -= Math.log(Math.max(1e-12, probs[i]![y[i]!]!));
+  return loss / probs.length;
+}
+
+function brierOf(probs: number[][], y: number[]): number {
+  if (probs.length === 0) return 0;
+  let sum = 0;
+  for (let i = 0; i < probs.length; i++) {
+    for (let c = 0; c < 3; c++) {
+      const target = y[i] === c ? 1 : 0;
+      sum += (probs[i]![c]! - target) ** 2;
+    }
+  }
+  return sum / probs.length;
 }
 
 /** Trains the ensemble model parameters once using chronological windows */
@@ -169,9 +209,9 @@ export function trainEnsemble(candles: Candle[], timeframe: Timeframe, k = 0.5):
   const labels: number[] = [];
   const returnsList: number[] = [];
 
-  // Generate dataset sequentially
+  // Generate dataset sequentially (windowed so cost stays linear in history length)
   for (let i = 60; i < n - 1; i++) {
-    const hist = candles.slice(0, i + 1);
+    const hist = candles.slice(Math.max(0, i + 1 - FEATURE_WINDOW), i + 1);
     const feats = extractFeatures(hist, timeframe);
 
     // Label classification
@@ -190,19 +230,21 @@ export function trainEnsemble(candles: Candle[], timeframe: Timeframe, k = 0.5):
     labels.push(label);
   }
 
-  // 2. Chronological Train-Val Split for Calibration
-  // 75% train, 25% val
+  // 2. Purged chronological train/validation split.
+  // A 1% embargo gap between train and validation prevents the label of the last
+  // training bar from leaking into the first validation bar (Lopez de Prado).
   const totalSamples = featuresList.length;
   const trainSize = Math.floor(totalSamples * 0.75);
+  const embargo = Math.max(1, Math.floor(totalSamples * 0.01));
 
   const X_train = featuresList.slice(0, trainSize);
   const y_train = labels.slice(0, trainSize);
   const ret_train = returnsList.slice(0, trainSize);
 
-  const X_val = featuresList.slice(trainSize);
-  const y_val = labels.slice(trainSize);
+  const X_val = featuresList.slice(trainSize + embargo);
+  const y_val = labels.slice(trainSize + embargo);
 
-  // 3. Scaler alignment
+  // 3. Scaler alignment (fitted on train only — no look-ahead)
   const scaler = fitScaler(X_train);
   const X_train_scaled = X_train.map((x) => transformFeatures(x, scaler));
   const X_val_scaled = X_val.map((x) => transformFeatures(x, scaler));
@@ -224,6 +266,80 @@ export function trainEnsemble(candles: Candle[], timeframe: Timeframe, k = 0.5):
   modelD.train(X_train_scaled, y_train);
   const tempD = tuneTemperature(modelD, X_val_scaled, y_val);
 
+  // 4b. Gradient-boosted trees over the full feature space — captures the
+  // non-linear interactions the linear models structurally cannot.
+  const gbm = new GradientBoostingClassifier(GBM_KEYS, {
+    rounds: totalSamples > 1500 ? 90 : 50,
+    learningRate: 0.1,
+    maxDepth: 3,
+    minSamplesLeaf: Math.max(15, Math.floor(trainSize * 0.02)),
+  });
+  gbm.train(X_train_scaled, y_train);
+  const tempGbm = tuneGbmTemperature(gbm, X_val_scaled, y_val);
+
+  // 5. Fit blend weights on the validation slice: each member gets weight
+  // proportional to exp(-logloss), so weak models fade out automatically.
+  const memberProbs = (x: FeatureSet): number[][] => [
+    modelA.predictProbs(x, tempA),
+    modelB.predictProbs(x, tempB),
+    modelC.predictProbs(x, tempC),
+    modelD.predictProbs(x, tempD),
+    gbm.isTrained ? gbm.predictProbs(x, tempGbm) : [1 / 3, 1 / 3, 1 / 3],
+  ];
+
+  const memberCount = 5;
+  const losses = new Array(memberCount).fill(0);
+  for (let i = 0; i < X_val_scaled.length; i++) {
+    const ps = memberProbs(X_val_scaled[i]!);
+    for (let m = 0; m < memberCount; m++) {
+      losses[m] += -Math.log(Math.max(1e-12, ps[m]![y_val[i]!]!));
+    }
+  }
+  let weights = new Array(memberCount).fill(1 / memberCount);
+  if (X_val_scaled.length > 20) {
+    const mean = losses.map((l) => l / X_val_scaled.length);
+    const best = Math.min(...mean);
+    const raw = mean.map((l, m) => {
+      if (m === 4 && !gbm.isTrained) return 0;
+      return Math.exp(-(l - best) / 0.05);
+    });
+    const sum = raw.reduce((a, b) => a + b, 0) || 1;
+    weights = raw.map((r) => r / sum);
+  }
+
+  const blend = (x: FeatureSet): number[] => {
+    const ps = memberProbs(x);
+    const out = [0, 0, 0];
+    for (let m = 0; m < memberCount; m++) {
+      for (let c = 0; c < 3; c++) out[c] = out[c]! + weights[m]! * ps[m]![c]!;
+    }
+    const sum = out.reduce((a, b) => a + b, 0) || 1;
+    return out.map((p) => p / sum);
+  };
+
+  // 6. Honest out-of-sample validation diagnostics + edge threshold search
+  const valProbs = X_val_scaled.map((x) => blend(x));
+  let valCorrect = 0;
+  const edges: { edge: number; correct: boolean }[] = [];
+  for (let i = 0; i < valProbs.length; i++) {
+    const p = valProbs[i]!;
+    const maxP = Math.max(...p);
+    const pred = maxP === p[0] ? 0 : maxP === p[1] ? 1 : 2;
+    const correct = pred === y_val[i];
+    if (correct) valCorrect++;
+    edges.push({ edge: Math.abs(p[0]! - p[1]!), correct });
+  }
+  const valAccuracy = valProbs.length ? valCorrect / valProbs.length : 0;
+
+  // top third by directional edge
+  const sortedEdges = [...edges].sort((a, b) => b.edge - a.edge);
+  const topCount = Math.max(1, Math.floor(sortedEdges.length / 3));
+  const topSlice = sortedEdges.slice(0, topCount);
+  const highConfidenceAccuracy = topSlice.length
+    ? topSlice.filter((e) => e.correct).length / topSlice.length
+    : 0;
+  const edgeThreshold = topSlice.length ? (topSlice[topSlice.length - 1]?.edge ?? 0.08) : 0.08;
+
   // Ridge Regression for expected return prediction
   const ridgeReg = new RidgeRegression(PRICE_KEYS);
   ridgeReg.train(X_train_scaled, ret_train);
@@ -238,6 +354,11 @@ export function trainEnsemble(candles: Candle[], timeframe: Timeframe, k = 0.5):
   const meanUpMove = countUp > 0 ? sumUpMove / countUp : 0.002;
   const meanDownMove = countDown > 0 ? sumDownMove / countDown : -0.002;
 
+  const featureImportance = Object.entries(gbm.gainByFeature)
+    .map(([key, weight]) => ({ key, weight }))
+    .sort((a, b) => b.weight - a.weight)
+    .slice(0, 8);
+
   return {
     scaler,
     modelA,
@@ -248,11 +369,26 @@ export function trainEnsemble(candles: Candle[], timeframe: Timeframe, k = 0.5):
     tempC,
     modelD,
     tempD,
+    gbm,
+    tempGbm,
+    weights,
     ridgeReg,
     meanUpMove,
     meanDownMove,
+    validation: {
+      samples: valProbs.length,
+      accuracy: valAccuracy,
+      logLoss: logLossOf(valProbs, y_val),
+      brier: brierOf(valProbs, y_val),
+      highConfidenceAccuracy,
+      highConfidenceShare: valProbs.length ? topCount / valProbs.length : 0,
+      edgeThreshold,
+    },
+    trainingSamples: trainSize,
+    featureImportance,
   };
 }
+
 
 /** Queries a pre-trained ensemble model to output predictions for the current candle */
 export function predictWithEnsemble(
