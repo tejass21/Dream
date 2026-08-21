@@ -461,8 +461,13 @@ export function predictWithEnsemble(
   // Calibrate confidence
   const sortedProbs = [...ensembleProbs].sort((a, b) => b - a);
   const margin = sortedProbs[0]! - sortedProbs[1]!;
-  // Adjust based on model agreement and margin
-  const confidence = Math.max(0.12, Math.min(0.96, margin * 0.7 + (agreementCount === 4 ? 0.20 : 0.0)));
+  // Anchor confidence to measured out-of-sample skill, not just the raw margin
+  const skill = Math.max(0, ensemble.validation.accuracy - 1 / 3) * 1.5;
+  const confidence = Math.max(
+    0.1,
+    Math.min(0.95, margin * 0.6 + skill * 0.35 + (agreementCount === 5 ? 0.1 : 0)),
+  );
+
 
   // Volatility & Regime Detection (Pure Dataset metrics, no indicators)
   const regime = detectRegime(candles);
