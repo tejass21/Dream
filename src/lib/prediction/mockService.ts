@@ -22,6 +22,7 @@ import {
   FeatureSet,
   Scaler,
 } from "./ml";
+import { GradientBoostingClassifier, tuneGbmTemperature } from "./gbm";
 import { classifyMove } from "./backtest";
 import { realizedVolatility } from "../market/indicators";
 
@@ -355,7 +356,7 @@ export function trainEnsemble(candles: Candle[], timeframe: Timeframe, k = 0.5):
   const meanDownMove = countDown > 0 ? sumDownMove / countDown : -0.002;
 
   const featureImportance = Object.entries(gbm.gainByFeature)
-    .map(([key, weight]) => ({ key, weight }))
+    .map(([key, weight]) => ({ key, weight: Number(weight) }))
     .sort((a, b) => b.weight - a.weight)
     .slice(0, 8);
 
