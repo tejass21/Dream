@@ -92,6 +92,7 @@ export function makeTradingDecision(
   price: number,
   atrVal: number,
   riskPct = 0.02,
+  edgeThreshold?: number,
 ): TradingDecision {
   const upP = prediction.upProbability;
   const downP = prediction.downProbability;
@@ -103,7 +104,7 @@ export function makeTradingDecision(
 
   // Configurable bounds
   const MIN_PROB = 0.44;
-  const MIN_SEPARATION = 0.08;
+  const MIN_SEPARATION = Math.max(0.05, edgeThreshold ?? 0.08);
   const TRANSACTION_BARRIER = 0.0005; // 5 bps slippage + execution barrier
 
   let signal: "TRADE" | "NO_SIGNAL" = "NO_SIGNAL";
@@ -500,12 +501,15 @@ export function predictWithEnsemble(
     confidence,
     expectedMove,
     factors: [],
-    modelId: "dream-softmax-v1",
+    modelId: "candleai-gbm-ensemble-v2",
     modelKind: "ml",
     expectedVolatility,
     regime,
     modelAgreement,
-    modelVersion: "v1.0.0",
+    modelVersion: "v2.0.0",
+    validation: ensemble.validation,
+    trainingSamples: ensemble.trainingSamples,
+    featureImportance: ensemble.featureImportance,
   };
 
   // Generate factors for visual explanation based on features (Dataset-only)
@@ -543,10 +547,20 @@ export function predictWithEnsemble(
     weight: Math.min(1.0, expectedVolatility * 100),
   });
 
+  const topFeature = ensemble.featureImportance[0];
+  if (topFeature) {
+    factors.push({
+      label: `Model driver: ${topFeature.key}`,
+      impact: "neutral",
+      weight: 0.5,
+      detail: `Highest split gain in the boosted-tree model`,
+    });
+  }
+
   predictionShell.factors = factors.sort((a, b) => b.weight - a.weight);
 
-  // Apply trading decisions layer
-  const decision = makeTradingDecision(predictionShell, price, atrVal);
+  // Apply trading decisions layer, gated by the validated edge threshold
+  const decision = makeTradingDecision(predictionShell, price, atrVal, 0.02, ensemble.validation.edgeThreshold);
   predictionShell.signal = decision.signal;
 
   return predictionShell;
@@ -564,8 +578,8 @@ export function computePrediction(candles: Candle[], asset: string, timeframe: T
     }
     if (niftyEnsemble) {
       const pred = predictWithEnsemble(niftyEnsemble, candles, asset, timeframe, k);
-      pred.modelId = "dream-nifty-50-v1";
-      pred.modelVersion = "v1.0.0 (Trained on 4,288 minute candles)";
+      pred.modelId = "candleai-nifty50-gbm-v2";
+      pred.modelVersion = `v2.0.0 (GBM ensemble, ${niftyEnsemble.trainingSamples} training samples)`;
       return pred;
     }
   }
@@ -574,7 +588,7 @@ export function computePrediction(candles: Candle[], asset: string, timeframe: T
 }
 
 export const mockPredictionService: PredictionService = {
-  modelId: "dream-softmax-v1",
+  modelId: "candleai-gbm-ensemble-v2",
   modelKind: "ml",
   async predict({ candles, asset, timeframe }: PredictionRequest): Promise<Prediction> {
     return computePrediction(candles, asset, timeframe);
