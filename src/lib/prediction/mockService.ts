@@ -566,6 +566,10 @@ export function predictWithEnsemble(
   return predictionShell;
 }
 
+/** Cache of live-trained ensembles, refreshed every REFIT_EVERY new candles. */
+const ensembleCache = new Map<string, { ensemble: TrainedEnsemble; trainedAt: number }>();
+const REFIT_EVERY = 60;
+
 export function computePrediction(candles: Candle[], asset: string, timeframe: Timeframe, k = 0.5): Prediction {
   if (asset === "NIFTY") {
     if (!niftyEnsemble) {
@@ -583,7 +587,15 @@ export function computePrediction(candles: Candle[], asset: string, timeframe: T
       return pred;
     }
   }
-  const ensemble = trainEnsemble(candles, timeframe, k);
+  const key = `${asset}|${timeframe}`;
+  const cached = ensembleCache.get(key);
+  const ensemble =
+    cached && candles.length - cached.trainedAt < REFIT_EVERY
+      ? cached.ensemble
+      : trainEnsemble(candles, timeframe, k);
+  if (ensemble !== cached?.ensemble) {
+    ensembleCache.set(key, { ensemble, trainedAt: candles.length });
+  }
   return predictWithEnsemble(ensemble, candles, asset, timeframe, k);
 }
 

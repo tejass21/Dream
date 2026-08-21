@@ -85,7 +85,7 @@ export function MarketProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let active = true;
     setLoading(true);
-    void source.getCandles(symbol, timeframe, 400).then((data) => {
+    void source.getCandles(symbol, timeframe, 3000).then((data) => {
       if (!active) return;
       setCandles([...data]);
       setLoading(false);
@@ -94,7 +94,7 @@ export function MarketProvider({ children }: { children: ReactNode }) {
       if (!active) return;
       setCandles((prev) => {
         if (prev.length === 0) return [candle];
-        if (isNew) return [...prev.slice(-899), candle];
+        if (isNew) return [...prev.slice(-3499), candle];
         const next = [...prev];
         next[next.length - 1] = candle;
         return next;
