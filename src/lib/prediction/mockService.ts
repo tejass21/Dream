@@ -407,8 +407,9 @@ export function predictWithEnsemble(
   const lastCandle = candles[n - 1]!;
   const price = lastCandle.close;
 
-  // Extract features for current candle T (n-1)
-  const currentRawFeats = extractFeatures(candles, timeframe);
+  // Extract features for current candle T (n-1) using the same window as training
+  const featWindow = candles.slice(Math.max(0, n - FEATURE_WINDOW));
+  const currentRawFeats = extractFeatures(featWindow, timeframe);
   const currentFeatsScaled = transformFeatures(currentRawFeats, ensemble.scaler);
 
   // Query models on current candle features
@@ -416,11 +417,21 @@ export function predictWithEnsemble(
   const probB = ensemble.modelB.predictProbs(currentFeatsScaled, ensemble.tempB);
   const probC = ensemble.modelC.predictProbs(currentFeatsScaled, ensemble.tempC);
   const probD = ensemble.modelD.predictProbs(currentFeatsScaled, ensemble.tempD);
+  const probG = ensemble.gbm.isTrained
+    ? ensemble.gbm.predictProbs(currentFeatsScaled, ensemble.tempGbm)
+    : [1 / 3, 1 / 3, 1 / 3];
 
-  // Ensemble Averaged Probabilities
-  const upProbability = (probA[0]! + probB[0]! + probC[0]! + probD[0]!) / 4;
-  const downProbability = (probA[1]! + probB[1]! + probC[1]! + probD[1]!) / 4;
-  const sidewaysProbability = (probA[2]! + probB[2]! + probC[2]! + probD[2]!) / 4;
+  // Validation-fitted weighted blend (weak members carry near-zero weight)
+  const members = [probA, probB, probC, probD, probG];
+  const blended = [0, 0, 0];
+  for (let m = 0; m < members.length; m++) {
+    const w = ensemble.weights[m] ?? 1 / members.length;
+    for (let c = 0; c < 3; c++) blended[c] = blended[c]! + w * members[m]![c]!;
+  }
+  const blendSum = blended.reduce((a, b) => a + b, 0) || 1;
+  const upProbability = blended[0]! / blendSum;
+  const downProbability = blended[1]! / blendSum;
+  const sidewaysProbability = blended[2]! / blendSum;
 
   const ensembleProbs = [upProbability, downProbability, sidewaysProbability];
   const maxProb = Math.max(...ensembleProbs);
@@ -435,9 +446,10 @@ export function predictWithEnsemble(
     const max = Math.max(...probs);
     return max === probs[0] ? "UP" : max === probs[1] ? "DOWN" : "SIDEWAYS";
   };
-  dirs.push(getDir(probA), getDir(probB), getDir(probC), getDir(probD));
+  dirs.push(getDir(probA), getDir(probB), getDir(probC), getDir(probD), getDir(probG));
   const agreementCount = dirs.filter((d) => d === direction).length;
-  const modelAgreement = `${agreementCount}/4`;
+  const modelAgreement = `${agreementCount}/5`;
+
 
   // Estimate expected move combining Ridge Regression and Class Probabilities
   const regExpectedMove = ensemble.ridgeReg.predict(currentFeatsScaled);
