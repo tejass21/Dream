@@ -322,25 +322,42 @@ export function trainEnsemble(candles: Candle[], timeframe: Timeframe, k = 0.5):
   // 6. Honest out-of-sample validation diagnostics + edge threshold search
   const valProbs = X_val_scaled.map((x) => blend(x));
   let valCorrect = 0;
-  const edges: { edge: number; correct: boolean }[] = [];
+  const samples: { edge: number; correct: boolean; dirCorrect: boolean | null }[] = [];
   for (let i = 0; i < valProbs.length; i++) {
     const p = valProbs[i]!;
     const maxP = Math.max(...p);
     const pred = maxP === p[0] ? 0 : maxP === p[1] ? 1 : 2;
     const correct = pred === y_val[i];
     if (correct) valCorrect++;
-    edges.push({ edge: Math.abs(p[0]! - p[1]!), correct });
+    // directional hit-rate ignores SIDEWAYS truth bars (unresolved for a trade)
+    const dirPred = p[0]! >= p[1]! ? 0 : 1;
+    const dirCorrect = y_val[i] === 2 ? null : dirPred === y_val[i];
+    samples.push({ edge: Math.abs(p[0]! - p[1]!), correct, dirCorrect });
   }
   const valAccuracy = valProbs.length ? valCorrect / valProbs.length : 0;
 
-  // top third by directional edge
-  const sortedEdges = [...edges].sort((a, b) => b.edge - a.edge);
-  const topCount = Math.max(1, Math.floor(sortedEdges.length / 3));
-  const topSlice = sortedEdges.slice(0, topCount);
-  const highConfidenceAccuracy = topSlice.length
-    ? topSlice.filter((e) => e.correct).length / topSlice.length
-    : 0;
-  const edgeThreshold = topSlice.length ? (topSlice[topSlice.length - 1]?.edge ?? 0.08) : 0.08;
+  // Search the edge threshold that maximises directional hit-rate with enough
+  // support. If no threshold beats a coin flip out-of-sample, the model is not
+  // allowed to emit trade signals at all (edgeThreshold = Infinity).
+  let bestThreshold = Number.POSITIVE_INFINITY;
+  let bestHitRate = 0;
+  let bestShare = 0;
+  const minSupport = Math.max(20, Math.floor(valProbs.length * 0.05));
+  for (let t = 0.02; t <= 0.4; t += 0.01) {
+    const taken = samples.filter((s) => s.edge >= t && s.dirCorrect !== null);
+    if (taken.length < minSupport) continue;
+    const hit = taken.filter((s) => s.dirCorrect).length / taken.length;
+    if (hit > bestHitRate) {
+      bestHitRate = hit;
+      bestThreshold = t;
+      bestShare = taken.length / valProbs.length;
+    }
+  }
+  const hasEdge = bestHitRate > 0.52;
+  const edgeThreshold = hasEdge ? bestThreshold : Number.POSITIVE_INFINITY;
+  const highConfidenceAccuracy = hasEdge ? bestHitRate : bestHitRate;
+  const highConfidenceShare = hasEdge ? bestShare : 0;
+
 
   // Ridge Regression for expected return prediction
   const ridgeReg = new RidgeRegression(PRICE_KEYS);
