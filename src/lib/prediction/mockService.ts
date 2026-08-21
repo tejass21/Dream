@@ -178,7 +178,10 @@ export interface TrainedEnsemble {
 }
 
 /** Sliding window big enough for every feature (50-bar stats + 5x HTF aggregation). */
-const FEATURE_WINDOW = 320;
+const FEATURE_WINDOW = 220;
+
+/** Cap on training rows so a refit stays interactive in the browser. */
+const MAX_TRAIN_ROWS = 2600;
 
 function logLossOf(probs: number[][], y: number[]): number {
   if (probs.length === 0) return 0;
@@ -212,7 +215,8 @@ export function trainEnsemble(candles: Candle[], timeframe: Timeframe, k = 0.5):
   const returnsList: number[] = [];
 
   // Generate dataset sequentially (windowed so cost stays linear in history length)
-  for (let i = 60; i < n - 1; i++) {
+  const startIndex = Math.max(60, n - 1 - MAX_TRAIN_ROWS);
+  for (let i = startIndex; i < n - 1; i++) {
     const hist = candles.slice(Math.max(0, i + 1 - FEATURE_WINDOW), i + 1);
     const feats = extractFeatures(hist, timeframe);
 
@@ -271,7 +275,7 @@ export function trainEnsemble(candles: Candle[], timeframe: Timeframe, k = 0.5):
   // 4b. Gradient-boosted trees over the full feature space — captures the
   // non-linear interactions the linear models structurally cannot.
   const gbm = new GradientBoostingClassifier(GBM_KEYS, {
-    rounds: totalSamples > 1500 ? 90 : 50,
+    rounds: totalSamples > 1500 ? 70 : 45,
     learningRate: 0.1,
     maxDepth: 3,
     minSamplesLeaf: Math.max(15, Math.floor(trainSize * 0.02)),
@@ -400,7 +404,7 @@ export function trainEnsemble(candles: Candle[], timeframe: Timeframe, k = 0.5):
       logLoss: logLossOf(valProbs, y_val),
       brier: brierOf(valProbs, y_val),
       highConfidenceAccuracy,
-      highConfidenceShare: valProbs.length ? topCount / valProbs.length : 0,
+      highConfidenceShare,
       edgeThreshold,
     },
     trainingSamples: trainSize,
