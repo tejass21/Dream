@@ -244,21 +244,23 @@ function getYahooSymbol(symbol: string): string {
 function mapYahooTimeframe(timeframe: Timeframe): { interval: string; range: string } {
   switch (timeframe) {
     case "1m":
-      return { interval: "1m", range: "1d" };
+      // Yahoo caps 1m data at 7 days
+      return { interval: "1m", range: "7d" };
     case "5m":
-      return { interval: "5m", range: "5d" };
+      return { interval: "5m", range: "60d" };
     case "15m":
-      return { interval: "15m", range: "5d" };
+      return { interval: "15m", range: "60d" };
     case "1h":
-      return { interval: "1h", range: "1mo" };
+      return { interval: "1h", range: "2y" };
     case "4h":
-      return { interval: "1h", range: "3mo" }; // We aggregate 1h to 4h
+      return { interval: "1h", range: "2y" }; // We aggregate 1h to 4h
     case "1d":
-      return { interval: "1d", range: "1y" };
+      return { interval: "1d", range: "10y" };
     default:
-      return { interval: "5m", range: "5d" };
+      return { interval: "5m", range: "60d" };
   }
 }
+
 
 const fetchYahooDirect = createServerFn({ method: "GET" })
   .validator((d: { symbol: string; timeframe: Timeframe }) => d)

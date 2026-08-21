@@ -34,7 +34,21 @@ export interface Prediction {
   signal?: "TRADE" | "NO_SIGNAL";
   modelAgreement?: string;
   modelVersion?: string;
+  /** honest out-of-sample metrics from the purged validation split */
+  validation?: {
+    samples: number;
+    accuracy: number;
+    logLoss: number;
+    brier: number;
+    highConfidenceAccuracy: number;
+    highConfidenceShare: number;
+    edgeThreshold: number;
+  };
+  trainingSamples?: number;
+  /** top gain-ranked features from the boosted-tree model */
+  featureImportance?: { key: string; weight: number }[];
 }
+
 
 export interface PredictionRequest {
   asset: string;

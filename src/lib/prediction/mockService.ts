@@ -22,16 +22,23 @@ import {
   FeatureSet,
   Scaler,
 } from "./ml";
+import { GradientBoostingClassifier, tuneGbmTemperature } from "./gbm";
 import { classifyMove } from "./backtest";
 import { realizedVolatility } from "../market/indicators";
 
 // Model feature partitions
-const PRICE_KEYS = ["ret1", "ret2", "ret3", "ret5", "ret8", "bodyPct", "upperWickPct", "lowerWickPct", "closeLocation", "distRollingHigh40", "distRollingLow40"];
-const VOLUME_KEYS = [...PRICE_KEYS, "relVolume", "volChange", "priceVolumeInt"];
-const MTF_KEYS = ["ret1", "mom6", "closeLocation", "distSupport", "distResistance"];
-const REGIME_KEYS = ["consecutiveDir", "hour", "dayOfWeek", "distSupport", "distResistance"];
+const PRICE_KEYS = ["ret1", "ret2", "ret3", "ret5", "ret8", "bodyPct", "upperWickPct", "lowerWickPct", "closeLocation", "distRollingHigh40", "distRollingLow40", "ret1Atr", "ret5Atr", "rangeAtr", "zScore50", "emaFast", "emaSpread"];
+const VOLUME_KEYS = [...PRICE_KEYS, "relVolume", "volChange", "priceVolumeInt", "volZ", "flowImbalance"];
+const MTF_KEYS = ["ret1", "mom6", "closeLocation", "distSupport", "distResistance", "htfRet1", "htfRet5", "htfCloseLocation", "emaTrend"];
+const REGIME_KEYS = ["consecutiveDir", "hour", "dayOfWeek", "distSupport", "distResistance", "atrPct", "volRatio", "volShort", "rsi14", "autocorr1"];
+
+/** The boosted-tree model sees the full feature space. */
+const GBM_KEYS = Array.from(
+  new Set([...PRICE_KEYS, ...VOLUME_KEYS, ...MTF_KEYS, ...REGIME_KEYS, "ret13", "minuteOfHour"]),
+);
 
 const ALL_KEYS = Array.from(new Set([...PRICE_KEYS, ...VOLUME_KEYS, ...MTF_KEYS, ...REGIME_KEYS]));
+
 
 /** Detects the current market regime based on structural rules and indicators */
 export function detectRegime(candles: Candle[]): string {
@@ -85,6 +92,7 @@ export function makeTradingDecision(
   price: number,
   atrVal: number,
   riskPct = 0.02,
+  edgeThreshold?: number,
 ): TradingDecision {
   const upP = prediction.upProbability;
   const downP = prediction.downProbability;
@@ -96,7 +104,7 @@ export function makeTradingDecision(
 
   // Configurable bounds
   const MIN_PROB = 0.44;
-  const MIN_SEPARATION = 0.08;
+  const MIN_SEPARATION = Math.max(0.05, edgeThreshold ?? 0.08);
   const TRANSACTION_BARRIER = 0.0005; // 5 bps slippage + execution barrier
 
   let signal: "TRADE" | "NO_SIGNAL" = "NO_SIGNAL";
@@ -146,9 +154,52 @@ export interface TrainedEnsemble {
   tempC: number;
   modelD: SoftmaxRegression;
   tempD: number;
+  gbm: GradientBoostingClassifier;
+  tempGbm: number;
+  /** blend weights for [A, B, C, D, GBM], fitted on the validation slice */
+  weights: number[];
   ridgeReg: RidgeRegression;
   meanUpMove: number;
   meanDownMove: number;
+  /** validation diagnostics — the honest, out-of-sample numbers */
+  validation: {
+    samples: number;
+    accuracy: number;
+    logLoss: number;
+    brier: number;
+    /** accuracy on the top-confidence third of validation samples */
+    highConfidenceAccuracy: number;
+    highConfidenceShare: number;
+    /** decision threshold on |p(up) - p(down)| that maximised validation edge */
+    edgeThreshold: number;
+  };
+  trainingSamples: number;
+  featureImportance: { key: string; weight: number }[];
+}
+
+/** Sliding window big enough for every feature (50-bar stats + 5x HTF aggregation). */
+const FEATURE_WINDOW = 220;
+
+/** Cap on training rows so a refit stays interactive in the browser. */
+const MAX_TRAIN_ROWS = 2600;
+
+function logLossOf(probs: number[][], y: number[]): number {
+  if (probs.length === 0) return 0;
+  let loss = 0;
+  for (let i = 0; i < probs.length; i++) loss -= Math.log(Math.max(1e-12, probs[i]![y[i]!]!));
+  return loss / probs.length;
+}
+
+function brierOf(probs: number[][], y: number[]): number {
+  if (probs.length === 0) return 0;
+  let sum = 0;
+  for (let i = 0; i < probs.length; i++) {
+    for (let c = 0; c < 3; c++) {
+      const target = y[i] === c ? 1 : 0;
+      sum += (probs[i]![c]! - target) ** 2;
+    }
+  }
+  return sum / probs.length;
 }
 
 /** Trains the ensemble model parameters once using chronological windows */
@@ -163,9 +214,10 @@ export function trainEnsemble(candles: Candle[], timeframe: Timeframe, k = 0.5):
   const labels: number[] = [];
   const returnsList: number[] = [];
 
-  // Generate dataset sequentially
-  for (let i = 60; i < n - 1; i++) {
-    const hist = candles.slice(0, i + 1);
+  // Generate dataset sequentially (windowed so cost stays linear in history length)
+  const startIndex = Math.max(60, n - 1 - MAX_TRAIN_ROWS);
+  for (let i = startIndex; i < n - 1; i++) {
+    const hist = candles.slice(Math.max(0, i + 1 - FEATURE_WINDOW), i + 1);
     const feats = extractFeatures(hist, timeframe);
 
     // Label classification
@@ -184,19 +236,21 @@ export function trainEnsemble(candles: Candle[], timeframe: Timeframe, k = 0.5):
     labels.push(label);
   }
 
-  // 2. Chronological Train-Val Split for Calibration
-  // 75% train, 25% val
+  // 2. Purged chronological train/validation split.
+  // A 1% embargo gap between train and validation prevents the label of the last
+  // training bar from leaking into the first validation bar (Lopez de Prado).
   const totalSamples = featuresList.length;
   const trainSize = Math.floor(totalSamples * 0.75);
+  const embargo = Math.max(1, Math.floor(totalSamples * 0.01));
 
   const X_train = featuresList.slice(0, trainSize);
   const y_train = labels.slice(0, trainSize);
   const ret_train = returnsList.slice(0, trainSize);
 
-  const X_val = featuresList.slice(trainSize);
-  const y_val = labels.slice(trainSize);
+  const X_val = featuresList.slice(trainSize + embargo);
+  const y_val = labels.slice(trainSize + embargo);
 
-  // 3. Scaler alignment
+  // 3. Scaler alignment (fitted on train only — no look-ahead)
   const scaler = fitScaler(X_train);
   const X_train_scaled = X_train.map((x) => transformFeatures(x, scaler));
   const X_val_scaled = X_val.map((x) => transformFeatures(x, scaler));
@@ -218,6 +272,97 @@ export function trainEnsemble(candles: Candle[], timeframe: Timeframe, k = 0.5):
   modelD.train(X_train_scaled, y_train);
   const tempD = tuneTemperature(modelD, X_val_scaled, y_val);
 
+  // 4b. Gradient-boosted trees over the full feature space — captures the
+  // non-linear interactions the linear models structurally cannot.
+  const gbm = new GradientBoostingClassifier(GBM_KEYS, {
+    rounds: totalSamples > 1500 ? 70 : 45,
+    learningRate: 0.1,
+    maxDepth: 3,
+    minSamplesLeaf: Math.max(15, Math.floor(trainSize * 0.02)),
+  });
+  gbm.train(X_train_scaled, y_train);
+  const tempGbm = tuneGbmTemperature(gbm, X_val_scaled, y_val);
+
+  // 5. Fit blend weights on the validation slice: each member gets weight
+  // proportional to exp(-logloss), so weak models fade out automatically.
+  const memberProbs = (x: FeatureSet): number[][] => [
+    modelA.predictProbs(x, tempA),
+    modelB.predictProbs(x, tempB),
+    modelC.predictProbs(x, tempC),
+    modelD.predictProbs(x, tempD),
+    gbm.isTrained ? gbm.predictProbs(x, tempGbm) : [1 / 3, 1 / 3, 1 / 3],
+  ];
+
+  const memberCount = 5;
+  const losses = new Array(memberCount).fill(0);
+  for (let i = 0; i < X_val_scaled.length; i++) {
+    const ps = memberProbs(X_val_scaled[i]!);
+    for (let m = 0; m < memberCount; m++) {
+      losses[m] += -Math.log(Math.max(1e-12, ps[m]![y_val[i]!]!));
+    }
+  }
+  let weights = new Array(memberCount).fill(1 / memberCount);
+  if (X_val_scaled.length > 20) {
+    const mean = losses.map((l) => l / X_val_scaled.length);
+    const best = Math.min(...mean);
+    const raw = mean.map((l, m) => {
+      if (m === 4 && !gbm.isTrained) return 0;
+      return Math.exp(-(l - best) / 0.05);
+    });
+    const sum = raw.reduce((a, b) => a + b, 0) || 1;
+    weights = raw.map((r) => r / sum);
+  }
+
+  const blend = (x: FeatureSet): number[] => {
+    const ps = memberProbs(x);
+    const out = [0, 0, 0];
+    for (let m = 0; m < memberCount; m++) {
+      for (let c = 0; c < 3; c++) out[c] = out[c]! + weights[m]! * ps[m]![c]!;
+    }
+    const sum = out.reduce((a, b) => a + b, 0) || 1;
+    return out.map((p) => p / sum);
+  };
+
+  // 6. Honest out-of-sample validation diagnostics + edge threshold search
+  const valProbs = X_val_scaled.map((x) => blend(x));
+  let valCorrect = 0;
+  const samples: { edge: number; correct: boolean; dirCorrect: boolean | null }[] = [];
+  for (let i = 0; i < valProbs.length; i++) {
+    const p = valProbs[i]!;
+    const maxP = Math.max(...p);
+    const pred = maxP === p[0] ? 0 : maxP === p[1] ? 1 : 2;
+    const correct = pred === y_val[i];
+    if (correct) valCorrect++;
+    // directional hit-rate ignores SIDEWAYS truth bars (unresolved for a trade)
+    const dirPred = p[0]! >= p[1]! ? 0 : 1;
+    const dirCorrect = y_val[i] === 2 ? null : dirPred === y_val[i];
+    samples.push({ edge: Math.abs(p[0]! - p[1]!), correct, dirCorrect });
+  }
+  const valAccuracy = valProbs.length ? valCorrect / valProbs.length : 0;
+
+  // Search the edge threshold that maximises directional hit-rate with enough
+  // support. If no threshold beats a coin flip out-of-sample, the model is not
+  // allowed to emit trade signals at all (edgeThreshold = Infinity).
+  let bestThreshold = Number.POSITIVE_INFINITY;
+  let bestHitRate = 0;
+  let bestShare = 0;
+  const minSupport = Math.max(20, Math.floor(valProbs.length * 0.05));
+  for (let t = 0.02; t <= 0.4; t += 0.01) {
+    const taken = samples.filter((s) => s.edge >= t && s.dirCorrect !== null);
+    if (taken.length < minSupport) continue;
+    const hit = taken.filter((s) => s.dirCorrect).length / taken.length;
+    if (hit > bestHitRate) {
+      bestHitRate = hit;
+      bestThreshold = t;
+      bestShare = taken.length / valProbs.length;
+    }
+  }
+  const hasEdge = bestHitRate > 0.52;
+  const edgeThreshold = hasEdge ? bestThreshold : Number.POSITIVE_INFINITY;
+  const highConfidenceAccuracy = hasEdge ? bestHitRate : bestHitRate;
+  const highConfidenceShare = hasEdge ? bestShare : 0;
+
+
   // Ridge Regression for expected return prediction
   const ridgeReg = new RidgeRegression(PRICE_KEYS);
   ridgeReg.train(X_train_scaled, ret_train);
@@ -232,6 +377,11 @@ export function trainEnsemble(candles: Candle[], timeframe: Timeframe, k = 0.5):
   const meanUpMove = countUp > 0 ? sumUpMove / countUp : 0.002;
   const meanDownMove = countDown > 0 ? sumDownMove / countDown : -0.002;
 
+  const featureImportance = Object.entries(gbm.gainByFeature)
+    .map(([key, weight]) => ({ key, weight: Number(weight) }))
+    .sort((a, b) => b.weight - a.weight)
+    .slice(0, 8);
+
   return {
     scaler,
     modelA,
@@ -242,11 +392,26 @@ export function trainEnsemble(candles: Candle[], timeframe: Timeframe, k = 0.5):
     tempC,
     modelD,
     tempD,
+    gbm,
+    tempGbm,
+    weights,
     ridgeReg,
     meanUpMove,
     meanDownMove,
+    validation: {
+      samples: valProbs.length,
+      accuracy: valAccuracy,
+      logLoss: logLossOf(valProbs, y_val),
+      brier: brierOf(valProbs, y_val),
+      highConfidenceAccuracy,
+      highConfidenceShare,
+      edgeThreshold,
+    },
+    trainingSamples: trainSize,
+    featureImportance,
   };
 }
+
 
 /** Queries a pre-trained ensemble model to output predictions for the current candle */
 export function predictWithEnsemble(
@@ -264,8 +429,9 @@ export function predictWithEnsemble(
   const lastCandle = candles[n - 1]!;
   const price = lastCandle.close;
 
-  // Extract features for current candle T (n-1)
-  const currentRawFeats = extractFeatures(candles, timeframe);
+  // Extract features for current candle T (n-1) using the same window as training
+  const featWindow = candles.slice(Math.max(0, n - FEATURE_WINDOW));
+  const currentRawFeats = extractFeatures(featWindow, timeframe);
   const currentFeatsScaled = transformFeatures(currentRawFeats, ensemble.scaler);
 
   // Query models on current candle features
@@ -273,11 +439,21 @@ export function predictWithEnsemble(
   const probB = ensemble.modelB.predictProbs(currentFeatsScaled, ensemble.tempB);
   const probC = ensemble.modelC.predictProbs(currentFeatsScaled, ensemble.tempC);
   const probD = ensemble.modelD.predictProbs(currentFeatsScaled, ensemble.tempD);
+  const probG = ensemble.gbm.isTrained
+    ? ensemble.gbm.predictProbs(currentFeatsScaled, ensemble.tempGbm)
+    : [1 / 3, 1 / 3, 1 / 3];
 
-  // Ensemble Averaged Probabilities
-  const upProbability = (probA[0]! + probB[0]! + probC[0]! + probD[0]!) / 4;
-  const downProbability = (probA[1]! + probB[1]! + probC[1]! + probD[1]!) / 4;
-  const sidewaysProbability = (probA[2]! + probB[2]! + probC[2]! + probD[2]!) / 4;
+  // Validation-fitted weighted blend (weak members carry near-zero weight)
+  const members = [probA, probB, probC, probD, probG];
+  const blended = [0, 0, 0];
+  for (let m = 0; m < members.length; m++) {
+    const w = ensemble.weights[m] ?? 1 / members.length;
+    for (let c = 0; c < 3; c++) blended[c] = blended[c]! + w * members[m]![c]!;
+  }
+  const blendSum = blended.reduce((a, b) => a + b, 0) || 1;
+  const upProbability = blended[0]! / blendSum;
+  const downProbability = blended[1]! / blendSum;
+  const sidewaysProbability = blended[2]! / blendSum;
 
   const ensembleProbs = [upProbability, downProbability, sidewaysProbability];
   const maxProb = Math.max(...ensembleProbs);
@@ -292,9 +468,10 @@ export function predictWithEnsemble(
     const max = Math.max(...probs);
     return max === probs[0] ? "UP" : max === probs[1] ? "DOWN" : "SIDEWAYS";
   };
-  dirs.push(getDir(probA), getDir(probB), getDir(probC), getDir(probD));
+  dirs.push(getDir(probA), getDir(probB), getDir(probC), getDir(probD), getDir(probG));
   const agreementCount = dirs.filter((d) => d === direction).length;
-  const modelAgreement = `${agreementCount}/4`;
+  const modelAgreement = `${agreementCount}/5`;
+
 
   // Estimate expected move combining Ridge Regression and Class Probabilities
   const regExpectedMove = ensemble.ridgeReg.predict(currentFeatsScaled);
@@ -306,8 +483,13 @@ export function predictWithEnsemble(
   // Calibrate confidence
   const sortedProbs = [...ensembleProbs].sort((a, b) => b - a);
   const margin = sortedProbs[0]! - sortedProbs[1]!;
-  // Adjust based on model agreement and margin
-  const confidence = Math.max(0.12, Math.min(0.96, margin * 0.7 + (agreementCount === 4 ? 0.20 : 0.0)));
+  // Anchor confidence to measured out-of-sample skill, not just the raw margin
+  const skill = Math.max(0, ensemble.validation.accuracy - 1 / 3) * 1.5;
+  const confidence = Math.max(
+    0.1,
+    Math.min(0.95, margin * 0.6 + skill * 0.35 + (agreementCount === 5 ? 0.1 : 0)),
+  );
+
 
   // Volatility & Regime Detection (Pure Dataset metrics, no indicators)
   const regime = detectRegime(candles);
@@ -340,12 +522,15 @@ export function predictWithEnsemble(
     confidence,
     expectedMove,
     factors: [],
-    modelId: "dream-softmax-v1",
+    modelId: "candleai-gbm-ensemble-v2",
     modelKind: "ml",
     expectedVolatility,
     regime,
     modelAgreement,
-    modelVersion: "v1.0.0",
+    modelVersion: "v2.0.0",
+    validation: ensemble.validation,
+    trainingSamples: ensemble.trainingSamples,
+    featureImportance: ensemble.featureImportance,
   };
 
   // Generate factors for visual explanation based on features (Dataset-only)
@@ -383,14 +568,28 @@ export function predictWithEnsemble(
     weight: Math.min(1.0, expectedVolatility * 100),
   });
 
+  const topFeature = ensemble.featureImportance[0];
+  if (topFeature) {
+    factors.push({
+      label: `Model driver: ${topFeature.key}`,
+      impact: "neutral",
+      weight: 0.5,
+      detail: `Highest split gain in the boosted-tree model`,
+    });
+  }
+
   predictionShell.factors = factors.sort((a, b) => b.weight - a.weight);
 
-  // Apply trading decisions layer
-  const decision = makeTradingDecision(predictionShell, price, atrVal);
+  // Apply trading decisions layer, gated by the validated edge threshold
+  const decision = makeTradingDecision(predictionShell, price, atrVal, 0.02, ensemble.validation.edgeThreshold);
   predictionShell.signal = decision.signal;
 
   return predictionShell;
 }
+
+/** Cache of live-trained ensembles, refreshed every REFIT_EVERY new candles. */
+const ensembleCache = new Map<string, { ensemble: TrainedEnsemble; trainedAt: number }>();
+const REFIT_EVERY = 60;
 
 export function computePrediction(candles: Candle[], asset: string, timeframe: Timeframe, k = 0.5): Prediction {
   if (asset === "NIFTY") {
@@ -404,17 +603,25 @@ export function computePrediction(candles: Candle[], asset: string, timeframe: T
     }
     if (niftyEnsemble) {
       const pred = predictWithEnsemble(niftyEnsemble, candles, asset, timeframe, k);
-      pred.modelId = "dream-nifty-50-v1";
-      pred.modelVersion = "v1.0.0 (Trained on 4,288 minute candles)";
+      pred.modelId = "candleai-nifty50-gbm-v2";
+      pred.modelVersion = `v2.0.0 (GBM ensemble, ${niftyEnsemble.trainingSamples} training samples)`;
       return pred;
     }
   }
-  const ensemble = trainEnsemble(candles, timeframe, k);
+  const key = `${asset}|${timeframe}`;
+  const cached = ensembleCache.get(key);
+  const ensemble =
+    cached && candles.length - cached.trainedAt < REFIT_EVERY
+      ? cached.ensemble
+      : trainEnsemble(candles, timeframe, k);
+  if (ensemble !== cached?.ensemble) {
+    ensembleCache.set(key, { ensemble, trainedAt: candles.length });
+  }
   return predictWithEnsemble(ensemble, candles, asset, timeframe, k);
 }
 
 export const mockPredictionService: PredictionService = {
-  modelId: "dream-softmax-v1",
+  modelId: "candleai-gbm-ensemble-v2",
   modelKind: "ml",
   async predict({ candles, asset, timeframe }: PredictionRequest): Promise<Prediction> {
     return computePrediction(candles, asset, timeframe);

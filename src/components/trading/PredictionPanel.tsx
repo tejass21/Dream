@@ -161,10 +161,42 @@ export function PredictionPanel() {
         </div>
       )}
 
+      {prediction.validation && (
+        <div className="mt-3 border-t border-panel-border pt-2.5 grid grid-cols-3 gap-2">
+          <Metric label="OOS accuracy">
+            <span className="num text-xs font-semibold text-foreground">
+              {(prediction.validation.accuracy * 100).toFixed(1)}%
+            </span>
+          </Metric>
+          <Metric label="Hit rate (gated)">
+            <span
+              className={cn(
+                "num text-xs font-semibold",
+                prediction.validation.highConfidenceShare > 0 ? "text-bull" : "text-muted-foreground",
+              )}
+            >
+              {prediction.validation.highConfidenceShare > 0
+                ? `${(prediction.validation.highConfidenceAccuracy * 100).toFixed(1)}%`
+                : "no edge"}
+            </span>
+          </Metric>
+          <Metric label="Log loss">
+            <span className="num text-xs font-semibold text-muted-foreground">
+              {prediction.validation.logLoss.toFixed(3)}
+            </span>
+          </Metric>
+        </div>
+      )}
+
       <div className="mt-3 flex items-center gap-1.5 label-xs text-[9px]">
         <Cpu className="size-2.5 text-primary" />
-        model {prediction.modelId} ({prediction.modelVersion}) · walk-forward ensemble ML
+        model {prediction.modelId} ({prediction.modelVersion}) · GBM + softmax ensemble, purged
+        walk-forward validation
+        {prediction.validation
+          ? ` · ${prediction.validation.samples} out-of-sample bars`
+          : ""}
       </div>
+
     </Panel>
   );
 }
