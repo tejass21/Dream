@@ -1,4 +1,4 @@
-import type { Candle, Timeframe } from "../market/types";
+import { timeframeSeconds, type Candle, type Timeframe } from "../market/types";
 
 /** Named numeric feature vector used by the prediction models. */
 export type FeatureSet = Record<string, number>;
